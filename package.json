@@ -1,0 +1,31 @@
+{
+  "name": "taming-dlqs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Conference demo for Taming Dead-Letter Queues: A Serverless Framework for Triage, Patch, and Replay",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "diff": "cdk diff",
+    "destroy": "cdk destroy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.265.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@types/jest": "29.5.14",
+    "@types/node": "^24",
+    "aws-cdk": "2.1136.0",
+    "jest": "29.7.0",
+    "ts-jest": "29.4.12",
+    "ts-node": "10.9.2",
+    "typescript": "5.8.3"
+  }
+}
