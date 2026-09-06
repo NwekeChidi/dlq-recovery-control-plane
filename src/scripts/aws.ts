@@ -23,6 +23,14 @@ export interface DemoQueueUrls {
 const sqs = new SQSClient({});
 const cloudFormation = new CloudFormationClient({});
 
+export function formatDemoAwsError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/could not load credentials from any providers/i.test(message)) {
+    return "Could not load AWS credentials. Run `aws login` (or configure an AWS profile) and retry.";
+  }
+  return message;
+}
+
 export async function resolveDemoQueueUrls(): Promise<DemoQueueUrls> {
   const fromEnv = {
     queueUrl: process.env.SHIPMENTS_QUEUE_URL,

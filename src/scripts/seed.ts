@@ -6,7 +6,7 @@ import {
   shipmentIdOf,
   waitUntil,
 } from "../shared/demo-status";
-import { getQueueDepth, resolveDemoQueueUrls, sendJsonMessage } from "./aws";
+import { formatDemoAwsError, getQueueDepth, resolveDemoQueueUrls, sendJsonMessage } from "./aws";
 
 async function main(): Promise<void> {
   const wait = !process.argv.includes("--no-wait");
@@ -49,6 +49,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
+  console.error(formatDemoAwsError(error));
   process.exitCode = 1;
 });

@@ -1,3 +1,4 @@
+import { formatDemoAwsError } from "../../src/scripts/aws";
 import { DEMO_SHIPMENTS } from "../../src/fixtures/shipments";
 import {
   formatDemoStatus,
@@ -26,6 +27,12 @@ describe("demo status helpers", () => {
       "SHP-003",
       "SHP-004",
     ]);
+  });
+
+  test("explains missing AWS credentials for demo CLI scripts", () => {
+    expect(formatDemoAwsError(new Error("Could not load credentials from any providers"))).toBe(
+      "Could not load AWS credentials. Run `aws login` (or configure an AWS profile) and retry.",
+    );
   });
 
   test("waitUntil returns true when the predicate passes", async () => {

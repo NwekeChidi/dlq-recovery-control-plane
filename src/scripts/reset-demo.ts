@@ -1,4 +1,4 @@
-import { getQueueDepth, purgeQueue, resolveDemoQueueUrls } from "./aws";
+import { formatDemoAwsError, getQueueDepth, purgeQueue, resolveDemoQueueUrls } from "./aws";
 
 async function main(): Promise<void> {
   const urls = await resolveDemoQueueUrls();
@@ -15,6 +15,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
+  console.error(formatDemoAwsError(error));
   process.exitCode = 1;
 });
