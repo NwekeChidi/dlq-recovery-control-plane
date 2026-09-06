@@ -1,4 +1,5 @@
 import { isRecord } from "./shipment";
+import type { ShipmentDispatchStatus } from "./shipments-repo";
 
 export interface QueueDepth {
   visible: number;
@@ -13,11 +14,22 @@ export function queuesAreDirty(queue: QueueDepth, dlq: QueueDepth): boolean {
   return totalMessages(queue) + totalMessages(dlq) > 0;
 }
 
-export function formatDemoStatus(queue: QueueDepth, dlq: QueueDepth): string {
-  return [
+export function formatDemoStatus(
+  queue: QueueDepth,
+  dlq: QueueDepth,
+  shipments: Array<{ shipmentId: string; status: ShipmentDispatchStatus }> = [],
+): string {
+  const lines = [
     `ShipmentsQueue: ${queue.visible} (in-flight: ${queue.inFlight})`,
     `ShipmentsDLQ:    ${dlq.visible}`,
-  ].join("\n");
+  ];
+  if (shipments.length > 0) {
+    lines.push("Dispatched:");
+    for (const shipment of shipments) {
+      lines.push(`  ${shipment.shipmentId}  ${shipment.status}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 export function shipmentIdOf(payload: unknown): string {

@@ -11,9 +11,11 @@ import {
 import {
   DEMO_STACK_NAME,
   DLQ_URL_OUTPUT,
+  LEDGER_TABLE_OUTPUT,
   QUEUE_URL_OUTPUT,
 } from "../shared/demo";
 import type { QueueDepth } from "../shared/demo-status";
+import { DynamoShipmentLedger } from "../shared/shipments-repo";
 
 export interface DemoQueueUrls {
   queueUrl: string;
@@ -41,26 +43,39 @@ export async function resolveDemoQueueUrls(): Promise<DemoQueueUrls> {
     return { queueUrl: fromEnv.queueUrl, dlqUrl: fromEnv.dlqUrl };
   }
 
+  const outputs = await stackOutputs();
+  const queueUrl = outputs[QUEUE_URL_OUTPUT];
+  const dlqUrl = outputs[DLQ_URL_OUTPUT];
+  if (!queueUrl || !dlqUrl) {
+    throw new Error(
+      `Stack is missing ${QUEUE_URL_OUTPUT} / ${DLQ_URL_OUTPUT}. Deploy first, or set SHIPMENTS_QUEUE_URL and SHIPMENTS_DLQ_URL.`,
+    );
+  }
+
+  return { queueUrl, dlqUrl };
+}
+
+export async function resolveDemoLedger(): Promise<DynamoShipmentLedger> {
+  const tableName = process.env.DEMO_LEDGER_TABLE_NAME ?? (await stackOutputs())[LEDGER_TABLE_OUTPUT];
+  if (!tableName) {
+    throw new Error(
+      `Missing ${LEDGER_TABLE_OUTPUT}. Deploy first, or set DEMO_LEDGER_TABLE_NAME.`,
+    );
+  }
+  return DynamoShipmentLedger.fromTableName(tableName);
+}
+
+async function stackOutputs(): Promise<Record<string, string>> {
   const stackName = process.env.DEMO_STACK_NAME ?? DEMO_STACK_NAME;
   const result = await cloudFormation.send(
     new DescribeStacksCommand({ StackName: stackName }),
   );
   const outputs = result.Stacks?.[0]?.Outputs ?? [];
-  const byKey = Object.fromEntries(
+  return Object.fromEntries(
     outputs.flatMap((output) =>
       output.OutputKey && output.OutputValue ? [[output.OutputKey, output.OutputValue]] : [],
     ),
   );
-
-  const queueUrl = byKey[QUEUE_URL_OUTPUT];
-  const dlqUrl = byKey[DLQ_URL_OUTPUT];
-  if (!queueUrl || !dlqUrl) {
-    throw new Error(
-      `Stack ${stackName} is missing ${QUEUE_URL_OUTPUT} / ${DLQ_URL_OUTPUT}. Deploy first, or set SHIPMENTS_QUEUE_URL and SHIPMENTS_DLQ_URL.`,
-    );
-  }
-
-  return { queueUrl, dlqUrl };
 }
 
 export async function getQueueDepth(queueUrl: string): Promise<QueueDepth> {

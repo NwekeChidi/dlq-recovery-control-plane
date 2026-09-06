@@ -1,15 +1,24 @@
-import { formatDemoAwsError, getQueueDepth, purgeQueue, resolveDemoQueueUrls } from "./aws";
+import {
+  formatDemoAwsError,
+  getQueueDepth,
+  purgeQueue,
+  resolveDemoLedger,
+  resolveDemoQueueUrls,
+} from "./aws";
 
 async function main(): Promise<void> {
   const urls = await resolveDemoQueueUrls();
+  const ledger = await resolveDemoLedger();
   await purgeQueue(urls.queueUrl);
   await purgeQueue(urls.dlqUrl);
+  await ledger.clearShipments();
   const queue = await getQueueDepth(urls.queueUrl);
   const dlq = await getQueueDepth(urls.dlqUrl);
 
   console.log("Reset:");
   console.log("  ShipmentsQueue purged");
   console.log("  ShipmentsDLQ purged");
+  console.log("  DemoLedger shipment records cleared");
   console.log(`  ShipmentsQueue: ${queue.visible}`);
   console.log(`  ShipmentsDLQ:    ${dlq.visible}`);
 }
