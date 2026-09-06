@@ -12,9 +12,16 @@ import {
   isShipmentV1,
   type ShipmentV2,
 } from "../shared/shipment";
+import {
+  ClaimOutcome,
+  InMemoryShipmentLedger,
+  type ShipmentLedger,
+} from "../shared/shipments-repo";
 
 export interface ProcessShipmentOptions {
   recoveryId?: string;
+  ledger?: ShipmentLedger;
+  onDispatch?: (shipment: ShipmentV2) => void;
 }
 
 export async function processShipment(
@@ -35,7 +42,20 @@ export async function processShipment(
     throw new TransientCarrierError();
   }
 
-  // Simulated warehouse/carrier dispatch. P6 will persist this in DynamoDB.
+  const ledger = options.ledger ?? new InMemoryShipmentLedger();
+  const claim = await ledger.claimShipment(shipment.shipmentId);
+
+  if (claim.outcome === ClaimOutcome.AlreadyCompleted) {
+    return shipment;
+  }
+
+  if (claim.outcome === ClaimOutcome.InProgress) {
+    throw new Error(`Shipment ${shipment.shipmentId} dispatch is already in progress`);
+  }
+
+  options.onDispatch?.(shipment);
+  await ledger.completeShipment(shipment.shipmentId, "dispatched");
+
   if (shipment.shipmentId === "SHP-004" || shipment.scenario === "POST_DISPATCH_FAILURE") {
     throw new PostDispatchFailure();
   }
