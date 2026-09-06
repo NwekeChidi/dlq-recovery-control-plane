@@ -11,6 +11,7 @@ import {
   TransientCarrierError,
   UnsupportedSchemaError,
 } from "../../src/shared/errors";
+import { InMemoryShipmentLedger, ShipmentDispatchStatus } from "../../src/shared/shipments-repo";
 
 describe("processShipment", () => {
   test("SHP-001 throws TransientCarrierError on the initial path", async () => {
@@ -48,5 +49,31 @@ describe("processShipment", () => {
         schemaVersion: 2,
       }),
     ).resolves.toMatchObject({ shipmentId: "SHP-000" });
+  });
+
+  test("SHP-004 records completion then does not dispatch twice", async () => {
+    const ledger = new InMemoryShipmentLedger();
+    const dispatched: string[] = [];
+
+    await expect(
+      processShipment(shp004AlreadyDispatched, {
+        ledger,
+        onDispatch: (shipment) => dispatched.push(shipment.shipmentId),
+      }),
+    ).rejects.toBeInstanceOf(PostDispatchFailure);
+
+    expect(dispatched).toEqual(["SHP-004"]);
+    await expect(ledger.getShipmentState("SHP-004")).resolves.toMatchObject({
+      status: ShipmentDispatchStatus.Completed,
+    });
+
+    await expect(
+      processShipment(shp004AlreadyDispatched, {
+        ledger,
+        onDispatch: (shipment) => dispatched.push(shipment.shipmentId),
+      }),
+    ).resolves.toMatchObject({ shipmentId: "SHP-004" });
+
+    expect(dispatched).toEqual(["SHP-004"]);
   });
 });

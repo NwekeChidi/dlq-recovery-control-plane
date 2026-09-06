@@ -55,8 +55,27 @@ describe("RecoveryDemoStack", () => {
     });
   });
 
-  test("exports queue URLs for demo CLI scripts", () => {
+  test("exports queue URLs and ledger table name for demo CLI scripts", () => {
     template.hasOutput("ShipmentsQueueUrl", {});
     template.hasOutput("ShipmentsDlqUrl", {});
+    template.hasOutput("DemoLedgerTableName", {});
+  });
+
+  test("creates a pay-per-request dispatch ledger", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      BillingMode: "PAY_PER_REQUEST",
+      AttributeDefinitions: [
+        {
+          AttributeName: "pk",
+          AttributeType: "S",
+        },
+      ],
+      KeySchema: [
+        {
+          AttributeName: "pk",
+          KeyType: "HASH",
+        },
+      ],
+    });
   });
 });

@@ -6,12 +6,17 @@ import {
   shipmentIdOf,
   waitUntil,
 } from "../../src/shared/demo-status";
+import { ShipmentDispatchStatus } from "../../src/shared/shipments-repo";
 
 describe("demo status helpers", () => {
-  test("formats projector-friendly queue depths", () => {
+  test("formats projector-friendly queue depths and dispatch state", () => {
     expect(
-      formatDemoStatus({ visible: 0, inFlight: 1 }, { visible: 4, inFlight: 0 }),
-    ).toBe("ShipmentsQueue: 0 (in-flight: 1)\nShipmentsDLQ:    4");
+      formatDemoStatus({ visible: 0, inFlight: 1 }, { visible: 4, inFlight: 0 }, [
+        { shipmentId: "SHP-004", status: ShipmentDispatchStatus.Completed },
+      ]),
+    ).toBe(
+      "ShipmentsQueue: 0 (in-flight: 1)\nShipmentsDLQ:    4\nDispatched:\n  SHP-004  COMPLETED",
+    );
   });
 
   test("warns when either queue still has work", () => {
