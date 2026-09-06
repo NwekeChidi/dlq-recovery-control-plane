@@ -54,4 +54,9 @@ describe("RecoveryDemoStack", () => {
       },
     });
   });
+
+  test("exports queue URLs for demo CLI scripts", () => {
+    template.hasOutput("ShipmentsQueueUrl", {});
+    template.hasOutput("ShipmentsDlqUrl", {});
+  });
 });
