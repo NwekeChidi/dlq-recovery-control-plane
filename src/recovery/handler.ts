@@ -2,6 +2,7 @@ import { SQSClient } from "@aws-sdk/client-sqs";
 import type { DurableContext } from "@aws/durable-execution-sdk-js";
 import { withDurableExecution } from "@aws/durable-execution-sdk-js";
 import { deleteDlqMessage, loadDlqBatch, parseDlqBody, type DlqMessage } from "./load";
+import { observeReplayHealth, type RecoveryHealth } from "./observe";
 import { recordRecoveryDecision, triageLoadedMessage } from "./job";
 import { isTerminalHold } from "./quarantine";
 import { buildReplayEnvelope, replayOutcome, sendReplay, type ReplayEnvelope } from "./replay";
@@ -11,7 +12,9 @@ import {
   completeRecoveryJob,
   createRecoveryId,
   createStartedRecoveryJob,
+  RecoveryJobStatus,
   resolveRecoveryKnobs,
+  stopRecoveryJob,
   type RecoveryStartEvent,
   type RecoveryStore,
 } from "../shared/recovery";
@@ -25,6 +28,10 @@ export interface RecoveryStartResult {
   replayCandidateCount: number;
   patchCandidateCount: number;
   recoveredCount: number;
+  failureCount: number;
+  failureRate: number;
+  status: RecoveryJobStatus;
+  stopReason?: string;
 }
 
 export interface RecoveryHandlerDeps {
@@ -35,6 +42,14 @@ export interface RecoveryHandlerDeps {
   store: RecoveryStore;
   now?: () => string;
   createRecoveryId?: () => string;
+}
+
+interface DecisionCounts {
+  processedCount: number;
+  quarantinedCount: number;
+  suppressedCount: number;
+  replayCandidateCount: number;
+  patchCandidateCount: number;
 }
 
 export function createRecoveryHandler(deps: RecoveryHandlerDeps) {
@@ -69,87 +84,166 @@ export async function runRecovery(
     return id;
   });
 
-  const loaded = await context.step("load-batch", async () => deps.loadBatch(knobs.batchSize));
+  const counts: DecisionCounts = {
+    processedCount: 0,
+    quarantinedCount: 0,
+    suppressedCount: 0,
+    replayCandidateCount: 0,
+    patchCandidateCount: 0,
+  };
+  let lastHealth: RecoveryHealth = {
+    attempted: 0,
+    succeeded: 0,
+    failed: 0,
+    failureRate: 0,
+    safeToContinue: true,
+  };
 
-  const decisions = [];
-  let recoveredCount = 0;
-  for (const message of loaded) {
-    const classified = await context.step(`triage-${message.messageId}`, async () =>
-      triageLoadedMessage(parseDlqBody(message.body), deps.ledger),
+  for (let batchIndex = 0; ; batchIndex += 1) {
+    const loaded = await context.step(`load-batch-${batchIndex}`, async () =>
+      deps.loadBatch(knobs.batchSize),
     );
-    const recorded = await context.step(`record-${message.messageId}`, async () =>
-      recordRecoveryDecision({
-        store: deps.store,
-        recoveryId,
-        messageId: message.messageId,
-        payload: classified.payload,
-        shipmentId: classified.shipmentId,
-        triage: classified.triage,
-        now: now(),
-      }),
-    );
-    const sent = await context.step(`replay-${message.messageId}`, async () => {
-      const envelope = buildReplayEnvelope({
-        recoveryId,
-        originalMessageId: message.messageId,
-        record: recorded,
-      });
-      if (!envelope) {
+    if (loaded.length === 0) {
+      break;
+    }
+
+    const decisions = [];
+    let replayedThisBatch = 0;
+    for (const message of loaded) {
+      const classified = await context.step(`triage-${batchIndex}-${message.messageId}`, async () =>
+        triageLoadedMessage(parseDlqBody(message.body), deps.ledger),
+      );
+      const recorded = await context.step(`record-${batchIndex}-${message.messageId}`, async () =>
+        recordRecoveryDecision({
+          store: deps.store,
+          recoveryId,
+          messageId: message.messageId,
+          payload: classified.payload,
+          shipmentId: classified.shipmentId,
+          triage: classified.triage,
+          now: now(),
+        }),
+      );
+      const sent = await context.step(`replay-${batchIndex}-${message.messageId}`, async () => {
+        const envelope = buildReplayEnvelope({
+          recoveryId,
+          originalMessageId: message.messageId,
+          record: recorded,
+        });
+        if (!envelope) {
+          await deps.store.putRecoveryMessage(replayOutcome(recorded));
+          return false;
+        }
         await deps.store.putRecoveryMessage(replayOutcome(recorded));
-        return false;
+        await deps.replay(envelope);
+        return true;
+      });
+      await context.step(`delete-${batchIndex}-${message.messageId}`, async () => {
+        await deps.deleteMessage(message.receiptHandle);
+      });
+      decisions.push(recorded);
+      if (sent) {
+        replayedThisBatch += 1;
       }
-      await deps.replay(envelope);
-      await deps.store.putRecoveryMessage(replayOutcome(recorded));
-      return true;
+    }
+
+    addDecisionCounts(counts, decisions);
+
+    if (replayedThisBatch > 0 && knobs.replayDelaySeconds > 0) {
+      await context.wait(`wait-batch-${batchIndex}`, { seconds: knobs.replayDelaySeconds });
+    }
+
+    lastHealth = await context.step(`observe-batch-${batchIndex}`, async () => {
+      const messages = await deps.store.listRecoveryMessages(recoveryId);
+      return observeReplayHealth(messages, knobs.maxFailureRate);
     });
-    await context.step(`delete-${message.messageId}`, async () => {
-      await deps.deleteMessage(message.receiptHandle);
-    });
-    decisions.push(recorded);
-    if (sent) {
-      recoveredCount += 1;
+
+    if (!lastHealth.safeToContinue) {
+      await context.step("stop-job", async () => {
+        const job = await requireJob(deps.store, recoveryId);
+        await deps.store.putRecoveryJob(
+          stopRecoveryJob(
+            job,
+            lastHealth.reason ?? "Replay failure rate exceeded maxFailureRate",
+            {
+              processedCount: counts.processedCount,
+              quarantinedCount: counts.quarantinedCount,
+              suppressedCount: counts.suppressedCount,
+              recoveredCount: lastHealth.succeeded,
+              failureCount: lastHealth.failed,
+            },
+            now(),
+          ),
+        );
+      });
+      return toResult(recoveryId, counts, lastHealth, RecoveryJobStatus.Stopped);
     }
   }
 
-  const summary = summarizeDecisions(recoveryId, decisions, recoveredCount);
   await context.step("complete-job", async () => {
-    const job = await deps.store.getRecoveryJob(recoveryId);
-    if (!job) {
-      throw new Error(`Recovery job ${recoveryId} was not found`);
-    }
+    const job = await requireJob(deps.store, recoveryId);
     await deps.store.putRecoveryJob(
       completeRecoveryJob(
         job,
         {
-          processedCount: summary.processedCount,
-          quarantinedCount: summary.quarantinedCount,
-          suppressedCount: summary.suppressedCount,
-          recoveredCount: summary.recoveredCount,
+          processedCount: counts.processedCount,
+          quarantinedCount: counts.quarantinedCount,
+          suppressedCount: counts.suppressedCount,
+          recoveredCount: lastHealth.succeeded,
+          failureCount: lastHealth.failed,
         },
         now(),
       ),
     );
   });
 
-  return summary;
+  return toResult(recoveryId, counts, lastHealth, RecoveryJobStatus.Completed);
 }
 
-function summarizeDecisions(
-  recoveryId: string,
+function addDecisionCounts(
+  counts: DecisionCounts,
   decisions: Array<{ action: RecoveryAction }>,
-  recoveredCount: number,
+): void {
+  counts.processedCount += decisions.length;
+  counts.quarantinedCount += decisions.filter((decision) => isTerminalHold(decision.action)).length;
+  counts.suppressedCount += decisions.filter(
+    (decision) => decision.action === RecoveryAction.Skip,
+  ).length;
+  counts.replayCandidateCount += decisions.filter(
+    (decision) => decision.action === RecoveryAction.Replay,
+  ).length;
+  counts.patchCandidateCount += decisions.filter(
+    (decision) => decision.action === RecoveryAction.Patch,
+  ).length;
+}
+
+function toResult(
+  recoveryId: string,
+  counts: DecisionCounts,
+  health: RecoveryHealth,
+  status: RecoveryJobStatus,
 ): RecoveryStartResult {
   return {
     recoveryId,
-    processedCount: decisions.length,
-    quarantinedCount: decisions.filter((decision) => isTerminalHold(decision.action)).length,
-    suppressedCount: decisions.filter((decision) => decision.action === RecoveryAction.Skip).length,
-    replayCandidateCount: decisions.filter((decision) => decision.action === RecoveryAction.Replay)
-      .length,
-    patchCandidateCount: decisions.filter((decision) => decision.action === RecoveryAction.Patch)
-      .length,
-    recoveredCount,
+    processedCount: counts.processedCount,
+    quarantinedCount: counts.quarantinedCount,
+    suppressedCount: counts.suppressedCount,
+    replayCandidateCount: counts.replayCandidateCount,
+    patchCandidateCount: counts.patchCandidateCount,
+    recoveredCount: health.succeeded,
+    failureCount: health.failed,
+    failureRate: health.failureRate,
+    status,
+    stopReason: status === RecoveryJobStatus.Stopped ? health.reason : undefined,
   };
+}
+
+async function requireJob(store: RecoveryStore, recoveryId: string) {
+  const job = await store.getRecoveryJob(recoveryId);
+  if (!job) {
+    throw new Error(`Recovery job ${recoveryId} was not found`);
+  }
+  return job;
 }
 
 function depsFromEnv(): RecoveryHandlerDeps {

@@ -24,6 +24,7 @@ export interface ProcessShipmentOptions {
   recoveryId?: string;
   ledger?: ShipmentLedger;
   onDispatch?: (shipment: ShipmentV2) => void;
+  downstreamBroken?: boolean;
 }
 
 export async function processShipment(
@@ -35,6 +36,10 @@ export async function processShipment(
   }
 
   const shipment = parseShipmentV2(payload);
+
+  if (options.downstreamBroken && options.recoveryId !== undefined) {
+    throw new TransientCarrierError();
+  }
 
   // Covers carrier unavailable and carrier timeout — same recovery: replay.
   if (

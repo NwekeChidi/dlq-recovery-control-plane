@@ -1,16 +1,51 @@
 import type { SQSHandler } from "aws-lambda";
 import { InvalidShipmentError } from "../shared/errors";
+import {
+  DownstreamStatus,
+  ReplayResult,
+  type RecoveryStore,
+} from "../shared/recovery";
+import { DynamoRecoveryStore } from "../shared/recovery-repo";
 import { DynamoShipmentLedger, type ShipmentLedger } from "../shared/shipments-repo";
 import { processShipment } from "./process-shipment";
 
 export const handler: SQSHandler = async (event): Promise<void> => {
   const ledger = ledgerFromEnv();
+  const recovery = recoveryStoreFromEnv();
+  const downstreamBroken =
+    recovery !== undefined
+      ? (await recovery.getDownstreamStatus()) === DownstreamStatus.Broken
+      : false;
+
   for (const record of event.Records) {
     const recoveryId = record.messageAttributes.recoveryId?.stringValue;
+    const originalMessageId = record.messageAttributes.originalMessageId?.stringValue;
     const payload = parseBody(record.body);
-    await processShipment(payload, { recoveryId, ledger });
+    try {
+      await processShipment(payload, {
+        recoveryId,
+        ledger,
+        downstreamBroken: recoveryId !== undefined && downstreamBroken,
+      });
+      await recordReplayResult(recovery, recoveryId, originalMessageId, ReplayResult.Success);
+    } catch (error) {
+      await recordReplayResult(recovery, recoveryId, originalMessageId, ReplayResult.Failed);
+      throw error;
+    }
   }
 };
+
+async function recordReplayResult(
+  store: RecoveryStore | undefined,
+  recoveryId: string | undefined,
+  originalMessageId: string | undefined,
+  result: ReplayResult.Success | ReplayResult.Failed,
+): Promise<void> {
+  if (!store || !recoveryId || !originalMessageId) {
+    return;
+  }
+  await store.markReplayResult(recoveryId, originalMessageId, result);
+}
 
 function ledgerFromEnv(): ShipmentLedger | undefined {
   const tableName = process.env.DEMO_LEDGER_TABLE_NAME;
@@ -18,6 +53,14 @@ function ledgerFromEnv(): ShipmentLedger | undefined {
     return undefined;
   }
   return DynamoShipmentLedger.fromTableName(tableName);
+}
+
+function recoveryStoreFromEnv(): RecoveryStore | undefined {
+  const tableName = process.env.DEMO_LEDGER_TABLE_NAME;
+  if (!tableName) {
+    return undefined;
+  }
+  return DynamoRecoveryStore.fromTableName(tableName);
 }
 
 function parseBody(body: string): unknown {
