@@ -7,6 +7,14 @@ import { recordRecoveryDecision, triageLoadedMessage } from "./job";
 import { isTerminalHold } from "./quarantine";
 import { buildReplayEnvelope, replayOutcome, sendReplay, type ReplayEnvelope } from "./replay";
 import { RecoveryAction } from "../shared/failure";
+import {
+  RecoveryLogEvent,
+  recoveryMetricsSnapshot,
+  writeRecoveryLog,
+  writeRecoveryMetrics,
+  type RecoveryLogRecord,
+  type RecoveryMetricsSnapshot,
+} from "../shared/observability";
 import { DynamoRecoveryStore } from "../shared/recovery-repo";
 import {
   completeRecoveryJob,
@@ -17,6 +25,7 @@ import {
   stopRecoveryJob,
   type RecoveryStartEvent,
   type RecoveryStore,
+  type RecoveryMessageRecord,
 } from "../shared/recovery";
 import { DynamoShipmentLedger, type ShipmentLedger } from "../shared/shipments-repo";
 
@@ -40,6 +49,8 @@ export interface RecoveryHandlerDeps {
   deleteMessage: (receiptHandle: string) => Promise<void>;
   ledger: ShipmentLedger;
   store: RecoveryStore;
+  log?: (record: RecoveryLogRecord) => void;
+  emitMetrics?: (snapshot: Partial<RecoveryMetricsSnapshot>, recoveryId: string) => void;
   now?: () => string;
   createRecoveryId?: () => string;
 }
@@ -50,6 +61,7 @@ interface DecisionCounts {
   suppressedCount: number;
   replayCandidateCount: number;
   patchCandidateCount: number;
+  replayedCount: number;
 }
 
 export function createRecoveryHandler(deps: RecoveryHandlerDeps) {
@@ -69,6 +81,8 @@ export async function runRecovery(
 ): Promise<RecoveryStartResult> {
   const knobs = resolveRecoveryKnobs(event);
   const now = deps.now ?? (() => new Date().toISOString());
+  const log = deps.log ?? writeRecoveryLog;
+  const emitMetrics = deps.emitMetrics ?? writeRecoveryMetrics;
 
   const recoveryId = await context.step("create-job", async () => {
     const id = event.recoveryId ?? (deps.createRecoveryId ?? createRecoveryId)();
@@ -81,6 +95,8 @@ export async function runRecovery(
         replayDelaySeconds: knobs.replayDelaySeconds,
       }),
     );
+    log({ event: RecoveryLogEvent.RecoveryStarted, recoveryId: id });
+    emitMetrics({ RecoveryStarted: 1 }, id);
     return id;
   });
 
@@ -90,6 +106,7 @@ export async function runRecovery(
     suppressedCount: 0,
     replayCandidateCount: 0,
     patchCandidateCount: 0,
+    replayedCount: 0,
   };
   let lastHealth: RecoveryHealth = {
     attempted: 0,
@@ -113,8 +130,8 @@ export async function runRecovery(
       const classified = await context.step(`triage-${batchIndex}-${message.messageId}`, async () =>
         triageLoadedMessage(parseDlqBody(message.body), deps.ledger),
       );
-      const recorded = await context.step(`record-${batchIndex}-${message.messageId}`, async () =>
-        recordRecoveryDecision({
+      const recorded = await context.step(`record-${batchIndex}-${message.messageId}`, async () => {
+        const record = await recordRecoveryDecision({
           store: deps.store,
           recoveryId,
           messageId: message.messageId,
@@ -122,8 +139,10 @@ export async function runRecovery(
           shipmentId: classified.shipmentId,
           triage: classified.triage,
           now: now(),
-        }),
-      );
+        });
+        logDecision(log, record);
+        return record;
+      });
       const sent = await context.step(`replay-${batchIndex}-${message.messageId}`, async () => {
         const envelope = buildReplayEnvelope({
           recoveryId,
@@ -134,8 +153,20 @@ export async function runRecovery(
           await deps.store.putRecoveryMessage(replayOutcome(recorded));
           return false;
         }
-        await deps.store.putRecoveryMessage(replayOutcome(recorded));
+        const outcome = replayOutcome(recorded);
+        await deps.store.putRecoveryMessage(outcome);
         await deps.replay(envelope);
+        log({
+          event: RecoveryLogEvent.MessageReplayed,
+          recoveryId,
+          messageId: recorded.messageId,
+          shipmentId: recorded.shipmentId,
+          failureClass: recorded.failureClass,
+          action: recorded.action,
+          patchVersion: recorded.patchVersion,
+          replayAttempt: outcome.replayAttempt,
+          replayResult: outcome.replayResult,
+        });
         return true;
       });
       await context.step(`delete-${batchIndex}-${message.messageId}`, async () => {
@@ -144,6 +175,7 @@ export async function runRecovery(
       decisions.push(recorded);
       if (sent) {
         replayedThisBatch += 1;
+        counts.replayedCount += 1;
       }
     }
 
@@ -155,7 +187,18 @@ export async function runRecovery(
 
     lastHealth = await context.step(`observe-batch-${batchIndex}`, async () => {
       const messages = await deps.store.listRecoveryMessages(recoveryId);
-      return observeReplayHealth(messages, knobs.maxFailureRate);
+      const health = observeReplayHealth(messages, knobs.maxFailureRate);
+      log({
+        event: RecoveryLogEvent.RecoveryObserved,
+        recoveryId,
+        failureRate: health.failureRate,
+        attempted: health.attempted,
+        succeeded: health.succeeded,
+        failed: health.failed,
+        safeToContinue: health.safeToContinue,
+        reason: health.reason,
+      });
+      return health;
     });
 
     if (!lastHealth.safeToContinue) {
@@ -175,6 +218,14 @@ export async function runRecovery(
             now(),
           ),
         );
+        log({
+          event: RecoveryLogEvent.RecoveryStopped,
+          recoveryId,
+          reason: lastHealth.reason,
+          failureRate: lastHealth.failureRate,
+          status: RecoveryJobStatus.Stopped,
+        });
+        emitMetrics(metricsFrom(counts, lastHealth, true), recoveryId);
       });
       return toResult(recoveryId, counts, lastHealth, RecoveryJobStatus.Stopped);
     }
@@ -195,6 +246,13 @@ export async function runRecovery(
         now(),
       ),
     );
+    log({
+      event: RecoveryLogEvent.RecoveryCompleted,
+      recoveryId,
+      status: RecoveryJobStatus.Completed,
+      failureRate: lastHealth.failureRate,
+    });
+    emitMetrics(metricsFrom(counts, lastHealth, false), recoveryId);
   });
 
   return toResult(recoveryId, counts, lastHealth, RecoveryJobStatus.Completed);
@@ -236,6 +294,45 @@ function toResult(
     status,
     stopReason: status === RecoveryJobStatus.Stopped ? health.reason : undefined,
   };
+}
+
+function metricsFrom(
+  counts: DecisionCounts,
+  health: RecoveryHealth,
+  stopped: boolean,
+): RecoveryMetricsSnapshot {
+  return recoveryMetricsSnapshot({
+    triaged: counts.processedCount,
+    patched: counts.patchCandidateCount,
+    replayed: counts.replayedCount,
+    recovered: health.succeeded,
+    quarantined: counts.quarantinedCount,
+    suppressed: counts.suppressedCount,
+    failureRate: health.failureRate,
+    stopped,
+  });
+}
+
+function logDecision(log: (record: RecoveryLogRecord) => void, record: RecoveryMessageRecord): void {
+  const base = {
+    recoveryId: record.recoveryId,
+    messageId: record.messageId,
+    shipmentId: record.shipmentId,
+    failureClass: record.failureClass,
+    action: record.action,
+    patchVersion: record.patchVersion,
+    reason: record.reason,
+  };
+  log({ event: RecoveryLogEvent.MessageTriaged, ...base });
+  if (record.action === RecoveryAction.Patch) {
+    log({ event: RecoveryLogEvent.MessagePatched, ...base });
+  }
+  if (isTerminalHold(record.action)) {
+    log({ event: RecoveryLogEvent.MessageQuarantined, ...base });
+  }
+  if (record.action === RecoveryAction.Skip) {
+    log({ event: RecoveryLogEvent.DuplicateDispatchSuppressed, ...base });
+  }
 }
 
 async function requireJob(store: RecoveryStore, recoveryId: string) {

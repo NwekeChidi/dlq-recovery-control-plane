@@ -1,5 +1,7 @@
 import type { SQSHandler } from "aws-lambda";
+import { shipmentIdOf } from "../shared/demo-status";
 import { InvalidShipmentError } from "../shared/errors";
+import { RecoveryLogEvent, writeRecoveryLog } from "../shared/observability";
 import {
   DownstreamStatus,
   ReplayResult,
@@ -28,12 +30,33 @@ export const handler: SQSHandler = async (event): Promise<void> => {
         downstreamBroken: recoveryId !== undefined && downstreamBroken,
       });
       await recordReplayResult(recovery, recoveryId, originalMessageId, ReplayResult.Success);
+      logReplayResult(recoveryId, originalMessageId, payload, ReplayResult.Success);
     } catch (error) {
       await recordReplayResult(recovery, recoveryId, originalMessageId, ReplayResult.Failed);
+      logReplayResult(recoveryId, originalMessageId, payload, ReplayResult.Failed);
       throw error;
     }
   }
 };
+
+function logReplayResult(
+  recoveryId: string | undefined,
+  originalMessageId: string | undefined,
+  payload: unknown,
+  result: ReplayResult.Success | ReplayResult.Failed,
+): void {
+  if (!recoveryId) {
+    return;
+  }
+  const shipmentId = shipmentIdOf(payload);
+  writeRecoveryLog({
+    event: RecoveryLogEvent.ReplayResult,
+    recoveryId,
+    messageId: originalMessageId,
+    shipmentId: shipmentId === "unknown" ? undefined : shipmentId,
+    replayResult: result,
+  });
+}
 
 async function recordReplayResult(
   store: RecoveryStore | undefined,
