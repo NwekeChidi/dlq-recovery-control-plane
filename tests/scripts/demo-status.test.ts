@@ -2,12 +2,13 @@ import { formatDemoAwsError } from "../../src/scripts/aws";
 import { DEMO_SHIPMENTS } from "../../src/fixtures/shipments";
 import {
   formatDemoStatus,
+  labeled,
   queuesAreDirty,
   shipmentIdOf,
   waitUntil,
 } from "../../src/shared/demo-status";
 import { FailureClass, RecoveryAction } from "../../src/shared/failure";
-import { RecoveryJobStatus } from "../../src/shared/recovery";
+import { DownstreamStatus, RecoveryJobStatus, ReplayResult } from "../../src/shared/recovery";
 import { ShipmentDispatchStatus } from "../../src/shared/shipments-repo";
 
 describe("demo status helpers", () => {
@@ -17,44 +18,117 @@ describe("demo status helpers", () => {
         { shipmentId: "SHP-004", status: ShipmentDispatchStatus.Completed },
       ]),
     ).toBe(
-      "ShipmentsQueue: 0 (in-flight: 1)\nShipmentsDLQ:    4\nDispatched:\n  SHP-004  COMPLETED",
+      [
+        labeled("ShipmentsQueue", "0 (in-flight: 1)"),
+        labeled("ShipmentsDLQ", 4),
+        "Dispatched:",
+        "  SHP-004  COMPLETED",
+      ].join("\n"),
     );
   });
 
-  test("formats quarantine and recovery audit rows", () => {
+  test("formats a completed recovery as a projector summary", () => {
     expect(
-      formatDemoStatus({ visible: 0, inFlight: 0 }, { visible: 3, inFlight: 0 }, [], {
+      formatDemoStatus({ visible: 0, inFlight: 0 }, { visible: 0, inFlight: 0 }, [], {
+        downstreamStatus: DownstreamStatus.Healthy,
         quarantines: [
           {
-            messageId: "msg-003",
+            messageId: "m-003",
             shipmentId: "SHP-003",
             failureClass: FailureClass.Poison,
             action: RecoveryAction.Quarantine,
             reason: "do not invent a correction",
           },
         ],
-        recoveryJobs: [{ recoveryId: "rec-1", status: RecoveryJobStatus.Started }],
+        recoveryJobs: [
+          {
+            recoveryId: "REC-42",
+            status: RecoveryJobStatus.Completed,
+            startedAt: "2026-09-10T09:00:00.000Z",
+          },
+        ],
         recoveryMessages: [
           {
-            recoveryId: "rec-1",
-            messageId: "msg-003",
+            recoveryId: "REC-42",
+            messageId: "m-001",
+            shipmentId: "SHP-001",
+            failureClass: FailureClass.Transient,
+            action: RecoveryAction.Replay,
+            replayResult: ReplayResult.Success,
+          },
+          {
+            recoveryId: "REC-42",
+            messageId: "m-002",
+            shipmentId: "SHP-002",
+            failureClass: FailureClass.SchemaMismatch,
+            action: RecoveryAction.Patch,
+            replayResult: ReplayResult.Success,
+            patchVersion: "shipment-v1-to-v2",
+          },
+          {
+            recoveryId: "REC-42",
+            messageId: "m-003",
             shipmentId: "SHP-003",
             failureClass: FailureClass.Poison,
             action: RecoveryAction.Quarantine,
+            replayResult: ReplayResult.NotSent,
+          },
+          {
+            recoveryId: "REC-42",
+            messageId: "m-004",
+            shipmentId: "SHP-004",
+            failureClass: FailureClass.Duplicate,
+            action: RecoveryAction.Skip,
+            replayResult: ReplayResult.NotSent,
           },
         ],
       }),
     ).toBe(
       [
-        "ShipmentsQueue: 0 (in-flight: 0)",
-        "ShipmentsDLQ:    3",
-        "Quarantine:",
-        "  SHP-003  POISON  QUARANTINE",
-        "Recovery:",
-        "  rec-1  STARTED",
-        "    SHP-003  POISON  QUARANTINE",
+        labeled("ShipmentsQueue", 0),
+        labeled("ShipmentsDLQ", 0),
+        labeled("Downstream", "healthy"),
+        labeled("Quarantine", 1),
+        "",
+        labeled("Recovery", "REC-42"),
+        labeled("Status", "COMPLETED"),
+        labeled("Recovered", 2),
+        labeled("Patched", 1),
+        labeled("Quarantined", 1),
+        labeled("Suppressed", 1),
+        labeled("Replay failures", 0),
+        "  SHP-001  TRANSIENT  REPLAY  SUCCESS",
+        "  SHP-002  SCHEMA_MISMATCH  PATCH  SUCCESS",
+        "  SHP-003  POISON  QUARANTINE  NOT_SENT",
+        "  SHP-004  DUPLICATE  SKIP  NOT_SENT",
       ].join("\n"),
     );
+  });
+
+  test("shows why recovery stopped", () => {
+    expect(
+      formatDemoStatus({ visible: 0, inFlight: 0 }, { visible: 2, inFlight: 0 }, [], {
+        downstreamStatus: DownstreamStatus.Broken,
+        quarantines: [],
+        recoveryJobs: [
+          {
+            recoveryId: "REC-stop",
+            status: RecoveryJobStatus.Stopped,
+            stopReason: "Replay failure rate 1 exceeded maxFailureRate 0.25",
+          },
+        ],
+        recoveryMessages: [
+          {
+            recoveryId: "REC-stop",
+            messageId: "m-001",
+            shipmentId: "SHP-001",
+            failureClass: FailureClass.Transient,
+            action: RecoveryAction.Replay,
+            replayResult: ReplayResult.Failed,
+          },
+        ],
+      }),
+    ).toContain(labeled("Stop reason", "Replay failure rate 1 exceeded maxFailureRate 0.25"));
   });
 
   test("warns when either queue still has work", () => {

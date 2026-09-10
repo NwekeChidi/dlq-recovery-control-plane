@@ -11,11 +11,17 @@ import type { DlqMessage } from "../../src/recovery/load";
 import { PATCH_VERSION } from "../../src/recovery/patch";
 import type { ReplayEnvelope } from "../../src/recovery/replay";
 import { FailureClass, RecoveryAction } from "../../src/shared/failure";
+import { RecoveryLogEvent, type RecoveryLogRecord } from "../../src/shared/observability";
 import { RecoveryJobStatus, ReplayResult } from "../../src/shared/recovery";
 import { InMemoryRecoveryStore } from "../../src/shared/recovery-repo";
 import { InMemoryShipmentLedger } from "../../src/shared/shipments-repo";
 
 jest.setTimeout(60_000);
+
+const silentObservability = {
+  log: () => undefined,
+  emitMetrics: () => undefined,
+};
 
 function createFakeDlq(messages: DlqMessage[]) {
   const dlq = [...messages];
@@ -73,6 +79,7 @@ describe("recovery durable handler", () => {
         );
       },
       deleteMessage: dlq.deleteMessage,
+      ...silentObservability,
     });
 
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
@@ -173,6 +180,7 @@ describe("recovery durable handler", () => {
         );
       },
       deleteMessage: dlq.deleteMessage,
+      ...silentObservability,
     });
 
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
@@ -223,6 +231,7 @@ describe("recovery durable handler", () => {
         );
       },
       deleteMessage: dlq.deleteMessage,
+      ...silentObservability,
     });
 
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
@@ -259,6 +268,7 @@ describe("recovery durable handler", () => {
         );
       },
       deleteMessage: dlq.deleteMessage,
+      ...silentObservability,
     });
 
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
@@ -285,6 +295,82 @@ describe("recovery durable handler", () => {
       recoveredCount: 0,
       failureCount: 2,
       stopReason: "Replay failure rate 1 exceeded maxFailureRate 0.25",
+    });
+  });
+
+  test("emits structured records that reconstruct a recovery run", async () => {
+    const store = new InMemoryRecoveryStore();
+    const ledger = new InMemoryShipmentLedger();
+    await ledger.claimShipment("SHP-004");
+    await ledger.completeShipment("SHP-004", "dispatched");
+    const logs: RecoveryLogRecord[] = [];
+    const metrics: Array<{ recoveryId: string; snapshot: Record<string, number> }> = [];
+    const dlq = createFakeDlq([
+      { messageId: "m-001", receiptHandle: "r-001", body: JSON.stringify(shp001Transient) },
+      { messageId: "m-003", receiptHandle: "r-003", body: JSON.stringify(shp003Poison) },
+      { messageId: "m-004", receiptHandle: "r-004", body: JSON.stringify(shp004AlreadyDispatched) },
+    ]);
+
+    const handler = createRecoveryHandler({
+      ledger,
+      store,
+      loadBatch: dlq.loadBatch,
+      replay: async (envelope) => {
+        await store.markReplayResult(
+          envelope.attributes.recoveryId,
+          envelope.attributes.originalMessageId,
+          ReplayResult.Success,
+        );
+      },
+      deleteMessage: dlq.deleteMessage,
+      log: (record) => logs.push(record),
+      emitMetrics: (snapshot, recoveryId) => metrics.push({ recoveryId, snapshot }),
+    });
+
+    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    await runner.run({ payload: { batchSize: 3, recoveryId: "REC-42" } });
+
+    expect(logs.map((record) => record.event)).toEqual([
+      RecoveryLogEvent.RecoveryStarted,
+      RecoveryLogEvent.MessageTriaged,
+      RecoveryLogEvent.MessageReplayed,
+      RecoveryLogEvent.MessageTriaged,
+      RecoveryLogEvent.MessageQuarantined,
+      RecoveryLogEvent.MessageTriaged,
+      RecoveryLogEvent.DuplicateDispatchSuppressed,
+      RecoveryLogEvent.RecoveryObserved,
+      RecoveryLogEvent.RecoveryCompleted,
+    ]);
+    expect(logs.find((record) => record.event === RecoveryLogEvent.MessageReplayed)).toMatchObject({
+      recoveryId: "REC-42",
+      messageId: "m-001",
+      shipmentId: "SHP-001",
+      failureClass: FailureClass.Transient,
+      action: RecoveryAction.Replay,
+      replayResult: ReplayResult.Sent,
+    });
+    expect(logs.find((record) => record.event === RecoveryLogEvent.MessageQuarantined)).toMatchObject(
+      {
+        recoveryId: "REC-42",
+        shipmentId: "SHP-003",
+        action: RecoveryAction.Quarantine,
+      },
+    );
+    expect(
+      logs.find((record) => record.event === RecoveryLogEvent.DuplicateDispatchSuppressed),
+    ).toMatchObject({
+      shipmentId: "SHP-004",
+      action: RecoveryAction.Skip,
+    });
+    expect(metrics.at(-1)?.snapshot).toMatchObject({
+      RecoveryStarted: 1,
+      MessagesTriaged: 3,
+      MessagesReplayed: 1,
+      MessagesRecovered: 1,
+      MessagesQuarantined: 1,
+      DuplicateDispatchSuppressed: 1,
+      ReplayFailureRate: 0,
+      RecoveryStopped: 0,
     });
   });
 });
