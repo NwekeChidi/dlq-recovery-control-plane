@@ -7,6 +7,7 @@ import {
   ScanCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
+  CONFIG_PK,
   QUARANTINE_PK_PREFIX,
   RECOVERY_PK_PREFIX,
   isQuarantinePk,
@@ -21,6 +22,7 @@ import {
 } from "./dynamodb";
 import { FailureClass, RecoveryAction } from "./failure";
 import {
+  DownstreamStatus,
   RecoveryJobStatus,
   ReplayResult,
   type QuarantineRecord,
@@ -35,6 +37,7 @@ export class InMemoryRecoveryStore implements RecoveryStore {
   private readonly quarantines = new Map<string, QuarantineRecord>();
   private readonly jobs = new Map<string, RecoveryJobRecord>();
   private readonly messages = new Map<string, RecoveryMessageRecord>();
+  private downstreamStatus = DownstreamStatus.Healthy;
 
   async putQuarantine(record: QuarantineRecord): Promise<void> {
     this.quarantines.set(record.messageId, structuredClone(record));
@@ -79,10 +82,31 @@ export class InMemoryRecoveryStore implements RecoveryStore {
     return recoveryId ? records.filter((record) => record.recoveryId === recoveryId) : records;
   }
 
+  async getDownstreamStatus(): Promise<DownstreamStatus> {
+    return this.downstreamStatus;
+  }
+
+  async setDownstreamStatus(status: DownstreamStatus): Promise<void> {
+    this.downstreamStatus = status;
+  }
+
+  async markReplayResult(
+    recoveryId: string,
+    messageId: string,
+    result: ReplayResult.Success | ReplayResult.Failed,
+  ): Promise<void> {
+    const existing = await this.getRecoveryMessage(recoveryId, messageId);
+    if (!existing) {
+      return;
+    }
+    await this.putRecoveryMessage({ ...existing, replayResult: result });
+  }
+
   async clear(): Promise<void> {
     this.quarantines.clear();
     this.jobs.clear();
     this.messages.clear();
+    this.downstreamStatus = DownstreamStatus.Healthy;
   }
 }
 
@@ -189,6 +213,37 @@ export class DynamoRecoveryStore implements RecoveryStore {
     return recoveryId ? records.filter((record) => record.recoveryId === recoveryId) : records;
   }
 
+  async getDownstreamStatus(): Promise<DownstreamStatus> {
+    const item = await this.getItem(CONFIG_PK);
+    if (!item) {
+      return DownstreamStatus.Healthy;
+    }
+    return parseEnum(
+      item.downstreamStatus,
+      Object.values(DownstreamStatus),
+      DownstreamStatus.Healthy,
+    );
+  }
+
+  async setDownstreamStatus(status: DownstreamStatus): Promise<void> {
+    await this.putItem({
+      pk: CONFIG_PK,
+      downstreamStatus: status,
+    });
+  }
+
+  async markReplayResult(
+    recoveryId: string,
+    messageId: string,
+    result: ReplayResult.Success | ReplayResult.Failed,
+  ): Promise<void> {
+    const existing = await this.getRecoveryMessage(recoveryId, messageId);
+    if (!existing) {
+      return;
+    }
+    await this.putRecoveryMessage({ ...existing, replayResult: result });
+  }
+
   async clear(): Promise<void> {
     const [quarantines, jobs, messages] = await Promise.all([
       this.listQuarantines(),
@@ -199,6 +254,7 @@ export class DynamoRecoveryStore implements RecoveryStore {
       ...quarantines.map((record) => quarantinePk(record.messageId)),
       ...jobs.map((job) => recoveryJobPk(job.recoveryId)),
       ...messages.map((record) => recoveryMessagePk(record.recoveryId, record.messageId)),
+      CONFIG_PK,
     ];
     await this.batchDelete(pks);
   }

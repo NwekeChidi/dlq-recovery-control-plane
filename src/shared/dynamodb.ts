@@ -2,6 +2,11 @@ export const SHIPMENT_PK_PREFIX = "SHIPMENT#";
 export const QUARANTINE_PK_PREFIX = "QUARANTINE#";
 export const RECOVERY_PK_PREFIX = "RECOVERY#";
 export const RECOVERY_MESSAGE_INFIX = "#MSG#";
+export const CONFIG_PK = "CONFIG#DEMO";
+
+export function isConfigPk(pk: string): boolean {
+  return pk === CONFIG_PK;
+}
 
 export function shipmentPk(shipmentId: string): string {
   return `${SHIPMENT_PK_PREFIX}${shipmentId}`;

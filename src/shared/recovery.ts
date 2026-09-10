@@ -14,7 +14,14 @@ export enum RecoveryJobStatus {
 
 export enum ReplayResult {
   Sent = "SENT",
+  Success = "SUCCESS",
+  Failed = "FAILED",
   NotSent = "NOT_SENT",
+}
+
+export enum DownstreamStatus {
+  Healthy = "healthy",
+  Broken = "broken",
 }
 
 export interface QuarantineRecord {
@@ -74,6 +81,13 @@ export interface RecoveryStore {
     messageId: string,
   ): Promise<RecoveryMessageRecord | undefined>;
   listRecoveryMessages(recoveryId?: string): Promise<RecoveryMessageRecord[]>;
+  getDownstreamStatus(): Promise<DownstreamStatus>;
+  setDownstreamStatus(status: DownstreamStatus): Promise<void>;
+  markReplayResult(
+    recoveryId: string,
+    messageId: string,
+    result: ReplayResult.Success | ReplayResult.Failed,
+  ): Promise<void>;
   clear(): Promise<void>;
 }
 
@@ -145,6 +159,25 @@ export function completeRecoveryJob(
     suppressedCount: counts.suppressedCount,
     recoveredCount: counts.recoveredCount ?? job.recoveredCount,
     failureCount: counts.failureCount ?? job.failureCount,
+  };
+}
+
+export function stopRecoveryJob(
+  job: RecoveryJobRecord,
+  reason: string,
+  counts: {
+    processedCount: number;
+    quarantinedCount: number;
+    suppressedCount: number;
+    recoveredCount?: number;
+    failureCount?: number;
+  },
+  completedAt = new Date().toISOString(),
+): RecoveryJobRecord {
+  return {
+    ...completeRecoveryJob(job, counts, completedAt),
+    status: RecoveryJobStatus.Stopped,
+    stopReason: reason,
   };
 }
 
