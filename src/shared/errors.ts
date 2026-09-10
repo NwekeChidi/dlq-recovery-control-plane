@@ -1,5 +1,7 @@
+import { FailureCode } from "./failure";
+
 export class TransientCarrierError extends Error {
-  readonly code = "TRANSIENT_CARRIER_FAILURE" as const;
+  readonly code = FailureCode.TransientCarrierFailure;
 
   constructor(message = "Carrier dependency unavailable or timed out") {
     super(message);
@@ -8,7 +10,7 @@ export class TransientCarrierError extends Error {
 }
 
 export class UnsupportedSchemaError extends Error {
-  readonly code = "UNSUPPORTED_SCHEMA" as const;
+  readonly code = FailureCode.UnsupportedSchema;
 
   constructor(message = "Shipment payload uses an unsupported schema") {
     super(message);
@@ -17,7 +19,7 @@ export class UnsupportedSchemaError extends Error {
 }
 
 export class InvalidShipmentError extends Error {
-  readonly code = "INVALID_SHIPMENT" as const;
+  readonly code = FailureCode.InvalidShipment;
 
   constructor(message = "Shipment payload is invalid") {
     super(message);
@@ -26,7 +28,7 @@ export class InvalidShipmentError extends Error {
 }
 
 export class PostDispatchFailure extends Error {
-  readonly code = "POST_DISPATCH_FAILURE" as const;
+  readonly code = FailureCode.PostDispatchFailure;
 
   constructor(message = "Dispatch completed but the handler failed afterwards") {
     super(message);

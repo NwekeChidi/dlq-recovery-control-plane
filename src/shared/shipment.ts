@@ -1,3 +1,5 @@
+import { FailureCode } from "./failure";
+
 export const KNOWN_WAREHOUSES = ["LON-01"] as const;
 export const KNOWN_SERVICES = ["NEXT_DAY", "STANDARD"] as const;
 export const KNOWN_COUNTRIES = ["GB"] as const;
@@ -6,9 +8,16 @@ export type WarehouseId = (typeof KNOWN_WAREHOUSES)[number];
 export type ShipmentService = (typeof KNOWN_SERVICES)[number];
 export type DestinationCountry = (typeof KNOWN_COUNTRIES)[number];
 
-export type ShipmentScenario =
-  | "TRANSIENT_CARRIER_FAILURE"
-  | "POST_DISPATCH_FAILURE";
+export const SHIPMENT_SCENARIOS = [
+  FailureCode.TransientCarrierFailure,
+  FailureCode.PostDispatchFailure,
+] as const;
+
+export type ShipmentScenario = (typeof SHIPMENT_SCENARIOS)[number];
+
+export function isShipmentScenario(value: unknown): value is ShipmentScenario {
+  return SHIPMENT_SCENARIOS.some((scenario) => scenario === value);
+}
 
 export interface ShipmentV1 {
   shipment_id: string;
