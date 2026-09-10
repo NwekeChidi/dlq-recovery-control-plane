@@ -84,6 +84,7 @@ export class RecoveryDemoStack extends Stack {
       environment: {
         DEMO_LEDGER_TABLE_NAME: this.demoLedger.tableName,
         SHIPMENTS_DLQ_URL: this.shipmentsDlq.queueUrl,
+        SHIPMENTS_QUEUE_URL: this.shipmentsQueue.queueUrl,
       },
       bundling: {
         minify: true,
@@ -94,6 +95,7 @@ export class RecoveryDemoStack extends Stack {
 
     this.demoLedger.grantReadWriteData(this.recoveryFunction);
     this.shipmentsDlq.grantConsumeMessages(this.recoveryFunction);
+    this.shipmentsQueue.grantSendMessages(this.recoveryFunction);
 
     this.recoveryLiveAlias = new Alias(this, "RecoveryLiveAlias", {
       aliasName: RECOVERY_LIVE_ALIAS,
