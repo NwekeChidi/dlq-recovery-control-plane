@@ -11,6 +11,11 @@ export enum RecoveryJobStatus {
   Stopped = "STOPPED",
 }
 
+export enum ReplayResult {
+  Sent = "SENT",
+  NotSent = "NOT_SENT",
+}
+
 export interface QuarantineRecord {
   messageId: string;
   shipmentId?: string;
@@ -50,7 +55,7 @@ export interface RecoveryMessageRecord {
   patchVersion?: string;
   validationResult?: string;
   replayAttempt?: number;
-  replayResult?: string;
+  replayResult?: ReplayResult;
   reason?: string;
   createdAt: string;
 }

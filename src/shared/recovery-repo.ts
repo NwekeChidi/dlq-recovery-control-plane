@@ -22,6 +22,7 @@ import {
 import { FailureClass, RecoveryAction } from "./failure";
 import {
   RecoveryJobStatus,
+  ReplayResult,
   type QuarantineRecord,
   type RecoveryJobRecord,
   type RecoveryMessageRecord,
@@ -334,7 +335,10 @@ function toRecoveryMessageRecord(item: Record<string, unknown>): RecoveryMessage
     patchVersion: typeof item.patchVersion === "string" ? item.patchVersion : undefined,
     validationResult: typeof item.validationResult === "string" ? item.validationResult : undefined,
     replayAttempt: typeof item.replayAttempt === "number" ? item.replayAttempt : undefined,
-    replayResult: typeof item.replayResult === "string" ? item.replayResult : undefined,
+    replayResult:
+      item.replayResult === undefined
+        ? undefined
+        : parseEnum(item.replayResult, Object.values(ReplayResult), ReplayResult.NotSent),
     reason: typeof item.reason === "string" ? item.reason : undefined,
     createdAt: String(item.createdAt ?? ""),
   };
