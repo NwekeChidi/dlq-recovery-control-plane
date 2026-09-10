@@ -6,6 +6,8 @@ import {
   shipmentIdOf,
   waitUntil,
 } from "../../src/shared/demo-status";
+import { FailureClass, RecoveryAction } from "../../src/shared/failure";
+import { RecoveryJobStatus } from "../../src/shared/recovery";
 import { ShipmentDispatchStatus } from "../../src/shared/shipments-repo";
 
 describe("demo status helpers", () => {
@@ -16,6 +18,42 @@ describe("demo status helpers", () => {
       ]),
     ).toBe(
       "ShipmentsQueue: 0 (in-flight: 1)\nShipmentsDLQ:    4\nDispatched:\n  SHP-004  COMPLETED",
+    );
+  });
+
+  test("formats quarantine and recovery audit rows", () => {
+    expect(
+      formatDemoStatus({ visible: 0, inFlight: 0 }, { visible: 3, inFlight: 0 }, [], {
+        quarantines: [
+          {
+            messageId: "msg-003",
+            shipmentId: "SHP-003",
+            failureClass: FailureClass.Poison,
+            action: RecoveryAction.Quarantine,
+            reason: "do not invent a correction",
+          },
+        ],
+        recoveryJobs: [{ recoveryId: "rec-1", status: RecoveryJobStatus.Started }],
+        recoveryMessages: [
+          {
+            recoveryId: "rec-1",
+            messageId: "msg-003",
+            shipmentId: "SHP-003",
+            failureClass: FailureClass.Poison,
+            action: RecoveryAction.Quarantine,
+          },
+        ],
+      }),
+    ).toBe(
+      [
+        "ShipmentsQueue: 0 (in-flight: 0)",
+        "ShipmentsDLQ:    3",
+        "Quarantine:",
+        "  SHP-003  POISON  QUARANTINE",
+        "Recovery:",
+        "  rec-1  STARTED",
+        "    SHP-003  POISON  QUARANTINE",
+      ].join("\n"),
     );
   });
 

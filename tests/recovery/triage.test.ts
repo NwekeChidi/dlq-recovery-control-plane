@@ -5,6 +5,7 @@ import {
   shp004AlreadyDispatched,
 } from "../../src/fixtures/shipments";
 import { classify } from "../../src/recovery/triage";
+import { FailureClass, FailureCode, RecoveryAction } from "../../src/shared/failure";
 
 describe("classify", () => {
   test.each([
@@ -12,43 +13,43 @@ describe("classify", () => {
       "SHP-001 transient carrier",
       shp001Transient,
       {},
-      "TRANSIENT",
-      "REPLAY",
+      FailureClass.Transient,
+      RecoveryAction.Replay,
     ],
     [
       "SHP-002 legacy schema v1",
       shp002LegacyV1,
       {},
-      "SCHEMA_MISMATCH",
-      "PATCH",
+      FailureClass.SchemaMismatch,
+      RecoveryAction.Patch,
     ],
     [
       "SHP-003 poison payload",
       shp003Poison,
       {},
-      "POISON",
-      "QUARANTINE",
+      FailureClass.Poison,
+      RecoveryAction.Quarantine,
     ],
     [
       "unrecognized payload",
       { hello: "world" },
       {},
-      "UNKNOWN",
-      "MANUAL_REVIEW",
+      FailureClass.Unknown,
+      RecoveryAction.ManualReview,
     ],
     [
       "SHP-004 without completion evidence",
       shp004AlreadyDispatched,
       {},
-      "UNKNOWN",
-      "MANUAL_REVIEW",
+      FailureClass.Unknown,
+      RecoveryAction.ManualReview,
     ],
     [
       "completed shipment with ledger evidence",
       shp004AlreadyDispatched,
       { shipmentCompleted: true },
-      "DUPLICATE",
-      "SKIP",
+      FailureClass.Duplicate,
+      RecoveryAction.Skip,
     ],
   ] as const)("%s", (_label, payload, context, failureClass, action) => {
     const triage = classify(payload, context);
@@ -57,9 +58,21 @@ describe("classify", () => {
     expect(triage.reason.length).toBeGreaterThan(0);
   });
 
+  test("classifies from reusable failure codes when the payload is opaque", () => {
+    expect(classify({}, { errorCode: FailureCode.UnsupportedSchema }).failureClass).toBe(
+      FailureClass.SchemaMismatch,
+    );
+    expect(classify({}, { errorCode: FailureCode.InvalidShipment }).failureClass).toBe(
+      FailureClass.Poison,
+    );
+    expect(classify({}, { errorCode: FailureCode.TransientCarrierFailure }).failureClass).toBe(
+      FailureClass.Transient,
+    );
+  });
+
   test("unknown failures never default to replay", () => {
-    expect(classify({}).action).not.toBe("REPLAY");
-    expect(classify("not-json").action).toBe("MANUAL_REVIEW");
+    expect(classify({}).action).not.toBe(RecoveryAction.Replay);
+    expect(classify("not-json").action).toBe(RecoveryAction.ManualReview);
   });
 
   test("does not treat SHP-004 as a duplicate from the id alone", () => {
@@ -70,6 +83,6 @@ describe("classify", () => {
       service: "STANDARD",
       destinationCountry: "GB",
     });
-    expect(triage.failureClass).not.toBe("DUPLICATE");
+    expect(triage.failureClass).not.toBe(FailureClass.Duplicate);
   });
 });
