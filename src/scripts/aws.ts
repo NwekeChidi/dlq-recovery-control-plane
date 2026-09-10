@@ -15,6 +15,7 @@ import {
   QUEUE_URL_OUTPUT,
 } from "../shared/demo";
 import type { QueueDepth } from "../shared/demo-status";
+import { DynamoRecoveryStore } from "../shared/recovery-repo";
 import { DynamoShipmentLedger } from "../shared/shipments-repo";
 
 export interface DemoQueueUrls {
@@ -55,14 +56,22 @@ export async function resolveDemoQueueUrls(): Promise<DemoQueueUrls> {
   return { queueUrl, dlqUrl };
 }
 
-export async function resolveDemoLedger(): Promise<DynamoShipmentLedger> {
+export async function resolveDemoTableName(): Promise<string> {
   const tableName = process.env.DEMO_LEDGER_TABLE_NAME ?? (await stackOutputs())[LEDGER_TABLE_OUTPUT];
   if (!tableName) {
     throw new Error(
       `Missing ${LEDGER_TABLE_OUTPUT}. Deploy first, or set DEMO_LEDGER_TABLE_NAME.`,
     );
   }
-  return DynamoShipmentLedger.fromTableName(tableName);
+  return tableName;
+}
+
+export async function resolveDemoLedger(): Promise<DynamoShipmentLedger> {
+  return DynamoShipmentLedger.fromTableName(await resolveDemoTableName());
+}
+
+export async function resolveDemoRecoveryStore(): Promise<DynamoRecoveryStore> {
+  return DynamoRecoveryStore.fromTableName(await resolveDemoTableName());
 }
 
 async function stackOutputs(): Promise<Record<string, string>> {
