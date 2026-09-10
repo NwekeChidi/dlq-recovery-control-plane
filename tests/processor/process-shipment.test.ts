@@ -5,6 +5,7 @@ import {
   shp004AlreadyDispatched,
 } from "../../src/fixtures/shipments";
 import { processShipment } from "../../src/processor/process-shipment";
+import { migrateShipmentV1ToV2 } from "../../src/recovery/patch";
 import {
   InvalidShipmentError,
   PostDispatchFailure,
@@ -26,6 +27,18 @@ describe("processShipment", () => {
 
   test("SHP-002 throws UnsupportedSchemaError", async () => {
     await expect(processShipment(shp002LegacyV1)).rejects.toBeInstanceOf(UnsupportedSchemaError);
+  });
+
+  test("a patched SHP-002 v2 payload dispatches when recovery is authorized", async () => {
+    const dispatched: string[] = [];
+    const patch = migrateShipmentV1ToV2(shp002LegacyV1);
+    await expect(
+      processShipment(patch.patchedPayload, {
+        recoveryId: "REC-42",
+        onDispatch: (shipment) => dispatched.push(shipment.shipmentId),
+      }),
+    ).resolves.toMatchObject({ shipmentId: "SHP-002" });
+    expect(dispatched).toEqual(["SHP-002"]);
   });
 
   test("SHP-003 throws InvalidShipmentError", async () => {

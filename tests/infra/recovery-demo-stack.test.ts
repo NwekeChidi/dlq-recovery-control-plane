@@ -76,6 +76,15 @@ describe("RecoveryDemoStack", () => {
     template.hasResourceProperties("AWS::Lambda::Alias", {
       Name: "live",
     });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Timeout: 60,
+      Environment: {
+        Variables: {
+          SHIPMENTS_QUEUE_URL: Match.anyValue(),
+          SHIPMENTS_DLQ_URL: Match.anyValue(),
+        },
+      },
+    });
   });
 
   test("creates a pay-per-request dispatch ledger", () => {

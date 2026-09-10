@@ -8,8 +8,10 @@ import {
 } from "../../src/fixtures/shipments";
 import { createRecoveryHandler } from "../../src/recovery/handler";
 import type { DlqMessage } from "../../src/recovery/load";
+import { PATCH_VERSION } from "../../src/recovery/patch";
+import type { ReplayEnvelope } from "../../src/recovery/replay";
 import { FailureClass, RecoveryAction } from "../../src/shared/failure";
-import { RecoveryJobStatus } from "../../src/shared/recovery";
+import { RecoveryJobStatus, ReplayResult } from "../../src/shared/recovery";
 import { InMemoryRecoveryStore } from "../../src/shared/recovery-repo";
 import { InMemoryShipmentLedger } from "../../src/shared/shipments-repo";
 
@@ -24,7 +26,7 @@ describe("recovery durable handler", () => {
     await LocalDurableTestRunner.teardownTestEnvironment();
   });
 
-  test("loads a batch, records decisions, and does not replay", async () => {
+  test("replays only safe candidates once, then deletes the DLQ batch", async () => {
     const store = new InMemoryRecoveryStore();
     const ledger = new InMemoryShipmentLedger();
     await ledger.claimShipment("SHP-004");
@@ -36,6 +38,8 @@ describe("recovery durable handler", () => {
       { messageId: "m-003", receiptHandle: "r-003", body: JSON.stringify(shp003Poison) },
       { messageId: "m-004", receiptHandle: "r-004", body: JSON.stringify(shp004AlreadyDispatched) },
     ];
+    const sent: ReplayEnvelope[] = [];
+    const deleted: string[] = [];
 
     const handler = createRecoveryHandler({
       ledger,
@@ -43,6 +47,12 @@ describe("recovery durable handler", () => {
       now: () => "2026-09-10T05:00:00.000Z",
       createRecoveryId: () => "REC-test",
       loadBatch: async (batchSize) => queued.slice(0, batchSize),
+      replay: async (envelope) => {
+        sent.push(envelope);
+      },
+      deleteMessage: async (receiptHandle) => {
+        deleted.push(receiptHandle);
+      },
     });
 
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
@@ -56,7 +66,30 @@ describe("recovery durable handler", () => {
       suppressedCount: 1,
       replayCandidateCount: 1,
       patchCandidateCount: 1,
+      recoveredCount: 2,
     });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toEqual({
+      body: shp001Transient,
+      attributes: {
+        recoveryId: "REC-test",
+        originalMessageId: "m-001",
+        replayAttempt: 1,
+      },
+    });
+    expect(sent[1]?.body).toMatchObject({ shipmentId: "SHP-002", schemaVersion: 2 });
+    expect(sent[1]?.attributes).toEqual({
+      recoveryId: "REC-test",
+      originalMessageId: "m-002",
+      replayAttempt: 1,
+      patchVersion: PATCH_VERSION,
+    });
+    expect(sent.some((envelope) => JSON.stringify(envelope.body).includes("TELEPORT"))).toBe(
+      false,
+    );
+    expect(sent.some((envelope) => envelope.attributes.originalMessageId === "m-004")).toBe(false);
+    expect(deleted).toEqual(["r-001", "r-002", "r-003", "r-004"]);
 
     const job = await store.getRecoveryJob("REC-test");
     expect(job).toMatchObject({
@@ -64,25 +97,32 @@ describe("recovery durable handler", () => {
       processedCount: 4,
       quarantinedCount: 1,
       suppressedCount: 1,
-      recoveredCount: 0,
+      recoveredCount: 2,
     });
 
     await expect(store.getRecoveryMessage("REC-test", "m-001")).resolves.toMatchObject({
       action: RecoveryAction.Replay,
       failureClass: FailureClass.Transient,
+      replayResult: ReplayResult.Sent,
+      replayAttempt: 1,
     });
     await expect(store.getRecoveryMessage("REC-test", "m-002")).resolves.toMatchObject({
       action: RecoveryAction.Patch,
       failureClass: FailureClass.SchemaMismatch,
+      replayResult: ReplayResult.Sent,
     });
     await expect(store.getQuarantine("m-003")).resolves.toMatchObject({
       shipmentId: "SHP-003",
       originalPayload: shp003Poison,
       action: RecoveryAction.Quarantine,
     });
+    await expect(store.getRecoveryMessage("REC-test", "m-003")).resolves.toMatchObject({
+      replayResult: ReplayResult.NotSent,
+    });
     await expect(store.getRecoveryMessage("REC-test", "m-004")).resolves.toMatchObject({
       action: RecoveryAction.Skip,
       failureClass: FailureClass.Duplicate,
+      replayResult: ReplayResult.NotSent,
     });
   });
 
@@ -93,12 +133,20 @@ describe("recovery durable handler", () => {
       { messageId: "m-002", receiptHandle: "r-002", body: JSON.stringify(shp002LegacyV1) },
       { messageId: "m-003", receiptHandle: "r-003", body: JSON.stringify(shp003Poison) },
     ];
+    const sent: ReplayEnvelope[] = [];
+    const deleted: string[] = [];
 
     const handler = createRecoveryHandler({
       ledger: new InMemoryShipmentLedger(),
       store,
       createRecoveryId: () => "REC-batch",
       loadBatch: async (batchSize) => queued.slice(0, batchSize),
+      replay: async (envelope) => {
+        sent.push(envelope);
+      },
+      deleteMessage: async (receiptHandle) => {
+        deleted.push(receiptHandle);
+      },
     });
 
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
@@ -109,8 +157,11 @@ describe("recovery durable handler", () => {
       processedCount: 2,
       replayCandidateCount: 1,
       patchCandidateCount: 1,
+      recoveredCount: 2,
       quarantinedCount: 0,
     });
+    expect(sent).toHaveLength(2);
+    expect(deleted).toEqual(["r-001", "r-002"]);
     await expect(store.getQuarantine("m-003")).resolves.toBeUndefined();
   });
 });
