@@ -3,6 +3,7 @@ import { FailureClass, RecoveryAction } from "./failure";
 export const DEMO_RECOVERY_BATCH_SIZE = 2;
 export const DEMO_RECOVERY_REPLAY_DELAY_SECONDS = 5;
 export const DEMO_RECOVERY_MAX_FAILURE_RATE = 0.25;
+export const DEMO_RECOVERY_MAX_BATCH_SIZE = 10;
 
 export enum RecoveryJobStatus {
   Started = "STARTED",
@@ -90,4 +91,59 @@ export function createStartedRecoveryJob(input: {
     suppressedCount: 0,
     failureCount: 0,
   };
+}
+
+export interface RecoveryStartEvent {
+  batchSize?: number;
+  maxFailureRate?: number;
+  replayDelaySeconds?: number;
+}
+
+export interface RecoveryKnobs {
+  batchSize: number;
+  maxFailureRate: number;
+  replayDelaySeconds: number;
+}
+
+export function resolveRecoveryKnobs(event: RecoveryStartEvent = {}): RecoveryKnobs {
+  return {
+    batchSize: clampInt(event.batchSize, DEMO_RECOVERY_BATCH_SIZE, 1, DEMO_RECOVERY_MAX_BATCH_SIZE),
+    maxFailureRate: event.maxFailureRate ?? DEMO_RECOVERY_MAX_FAILURE_RATE,
+    replayDelaySeconds: clampInt(
+      event.replayDelaySeconds,
+      DEMO_RECOVERY_REPLAY_DELAY_SECONDS,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    ),
+  };
+}
+
+export function completeRecoveryJob(
+  job: RecoveryJobRecord,
+  counts: {
+    processedCount: number;
+    quarantinedCount: number;
+    suppressedCount: number;
+    recoveredCount?: number;
+    failureCount?: number;
+  },
+  completedAt = new Date().toISOString(),
+): RecoveryJobRecord {
+  return {
+    ...job,
+    status: RecoveryJobStatus.Completed,
+    completedAt,
+    processedCount: counts.processedCount,
+    quarantinedCount: counts.quarantinedCount,
+    suppressedCount: counts.suppressedCount,
+    recoveredCount: counts.recoveredCount ?? job.recoveredCount,
+    failureCount: counts.failureCount ?? job.failureCount,
+  };
+}
+
+function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(value)));
 }

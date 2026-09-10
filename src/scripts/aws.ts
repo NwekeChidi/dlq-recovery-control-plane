@@ -13,6 +13,7 @@ import {
   DLQ_URL_OUTPUT,
   LEDGER_TABLE_OUTPUT,
   QUEUE_URL_OUTPUT,
+  RECOVERY_ALIAS_OUTPUT,
 } from "../shared/demo";
 import type { QueueDepth } from "../shared/demo-status";
 import { DynamoRecoveryStore } from "../shared/recovery-repo";
@@ -72,6 +73,20 @@ export async function resolveDemoLedger(): Promise<DynamoShipmentLedger> {
 
 export async function resolveDemoRecoveryStore(): Promise<DynamoRecoveryStore> {
   return DynamoRecoveryStore.fromTableName(await resolveDemoTableName());
+}
+
+export async function resolveRecoveryAliasArn(): Promise<string> {
+  const fromEnv = process.env.RECOVERY_FUNCTION_ARN;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const aliasArn = (await stackOutputs())[RECOVERY_ALIAS_OUTPUT];
+  if (!aliasArn) {
+    throw new Error(
+      `Missing ${RECOVERY_ALIAS_OUTPUT}. Deploy first, or set RECOVERY_FUNCTION_ARN to the live alias ARN.`,
+    );
+  }
+  return aliasArn;
 }
 
 async function stackOutputs(): Promise<Record<string, string>> {
