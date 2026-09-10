@@ -16,17 +16,21 @@
     "destroy": "cdk destroy",
     "demo:reset": "ts-node --prefer-ts-exts src/scripts/reset-demo.ts",
     "demo:seed": "ts-node --prefer-ts-exts src/scripts/seed.ts",
-    "demo:status": "ts-node --prefer-ts-exts src/scripts/status.ts"
+    "demo:status": "ts-node --prefer-ts-exts src/scripts/status.ts",
+    "recovery:start": "ts-node --prefer-ts-exts src/scripts/start-recovery.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1127.0",
     "@aws-sdk/client-dynamodb": "3.1127.0",
+    "@aws-sdk/client-lambda": "3.1127.0",
     "@aws-sdk/client-sqs": "3.1127.0",
     "@aws-sdk/lib-dynamodb": "3.1127.0",
+    "@aws/durable-execution-sdk-js": "2.4.0",
     "aws-cdk-lib": "2.265.0",
     "constructs": "10.8.1"
   },
   "devDependencies": {
+    "@aws/durable-execution-sdk-js-testing": "1.1.4",
     "@types/aws-lambda": "8.10.160",
     "@types/jest": "29.5.14",
     "@types/node": "^24",
