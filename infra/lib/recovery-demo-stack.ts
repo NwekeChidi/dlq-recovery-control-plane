@@ -78,7 +78,7 @@ export class RecoveryDemoStack extends Stack {
 
     new CfnOutput(this, LEDGER_TABLE_OUTPUT, {
       value: this.demoLedger.tableName,
-      description: "DynamoDB ledger table for dispatch idempotency",
+      description: "DynamoDB ledger for dispatch, quarantine, and recovery audit",
     });
   }
 }
