@@ -1,6 +1,7 @@
 import {
   ACTION_BY_FAILURE_CLASS,
-  type FailureClass,
+  FailureClass,
+  FailureCode,
   type FailureContext,
   type TriageResult,
 } from "../shared/failure";
@@ -15,37 +16,37 @@ import {
 export function classify(payload: unknown, context: FailureContext = {}): TriageResult {
   if (context.shipmentCompleted === true) {
     return result(
-      "DUPLICATE",
+      FailureClass.Duplicate,
       "Dispatch already completed; replay would send the shipment twice",
     );
   }
 
-  if (isShipmentV1(payload) || context.errorCode === "UNSUPPORTED_SCHEMA") {
+  if (isShipmentV1(payload) || context.errorCode === FailureCode.UnsupportedSchema) {
     return result(
-      "SCHEMA_MISMATCH",
+      FailureClass.SchemaMismatch,
       "Payload uses shipment schema v1; patch to v2 before replay",
     );
   }
 
-  if (isPoisonPayload(payload) || context.errorCode === "INVALID_SHIPMENT") {
+  if (isPoisonPayload(payload) || context.errorCode === FailureCode.InvalidShipment) {
     return result(
-      "POISON",
+      FailureClass.Poison,
       "Payload fails current business rules; do not invent a correction",
     );
   }
 
   if (
     isTransientPayload(payload) ||
-    context.errorCode === "TRANSIENT_CARRIER_FAILURE"
+    context.errorCode === FailureCode.TransientCarrierFailure
   ) {
     return result(
-      "TRANSIENT",
+      FailureClass.Transient,
       "Carrier dependency failed or timed out; safe to replay when healthy",
     );
   }
 
   return result(
-    "UNKNOWN",
+    FailureClass.Unknown,
     "Failure is not classified; hold for manual review instead of replaying",
   );
 }
@@ -85,7 +86,7 @@ function looksLikeCurrentShipment(payload: Record<string, unknown>): boolean {
 }
 
 function isTransientPayload(payload: unknown): boolean {
-  return isRecord(payload) && payload.scenario === "TRANSIENT_CARRIER_FAILURE";
+  return isRecord(payload) && payload.scenario === FailureCode.TransientCarrierFailure;
 }
 
 function isAllowed(value: unknown, allowed: readonly string[]): boolean {

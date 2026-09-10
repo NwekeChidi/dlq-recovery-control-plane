@@ -1,3 +1,4 @@
+import { FailureCode } from "../shared/failure";
 import type { ShipmentV1, ShipmentV2 } from "../shared/shipment";
 
 /** Carrier down or carrier timed out — one recovery class: replay. */
@@ -7,7 +8,7 @@ export const shp001Transient: ShipmentV2 = {
   warehouseId: "LON-01",
   service: "NEXT_DAY",
   destinationCountry: "GB",
-  scenario: "TRANSIENT_CARRIER_FAILURE",
+  scenario: FailureCode.TransientCarrierFailure,
 };
 
 export const shp002LegacyV1: ShipmentV1 = {

@@ -4,11 +4,13 @@ import {
   TransientCarrierError,
   UnsupportedSchemaError,
 } from "../shared/errors";
+import { FailureCode } from "../shared/failure";
 import {
   KNOWN_COUNTRIES,
   KNOWN_SERVICES,
   KNOWN_WAREHOUSES,
   isRecord,
+  isShipmentScenario,
   isShipmentV1,
   type ShipmentV2,
 } from "../shared/shipment";
@@ -36,7 +38,7 @@ export async function processShipment(
 
   // Covers carrier unavailable and carrier timeout — same recovery: replay.
   if (
-    shipment.scenario === "TRANSIENT_CARRIER_FAILURE" &&
+    shipment.scenario === FailureCode.TransientCarrierFailure &&
     options.recoveryId === undefined
   ) {
     throw new TransientCarrierError();
@@ -56,7 +58,7 @@ export async function processShipment(
   options.onDispatch?.(shipment);
   await ledger.completeShipment(shipment.shipmentId, "dispatched");
 
-  if (shipment.shipmentId === "SHP-004" || shipment.scenario === "POST_DISPATCH_FAILURE") {
+  if (shipment.shipmentId === "SHP-004" || shipment.scenario === FailureCode.PostDispatchFailure) {
     throw new PostDispatchFailure();
   }
 
@@ -84,10 +86,7 @@ function parseShipmentV2(payload: unknown): ShipmentV2 {
     shipment.schemaVersion = 2;
   }
 
-  if (
-    payload.scenario === "TRANSIENT_CARRIER_FAILURE" ||
-    payload.scenario === "POST_DISPATCH_FAILURE"
-  ) {
+  if (isShipmentScenario(payload.scenario)) {
     shipment.scenario = payload.scenario;
   }
 
