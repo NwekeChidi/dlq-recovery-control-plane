@@ -17,6 +17,8 @@
     "demo:reset": "ts-node --prefer-ts-exts src/scripts/reset-demo.ts",
     "demo:seed": "ts-node --prefer-ts-exts src/scripts/seed.ts",
     "demo:status": "ts-node --prefer-ts-exts src/scripts/status.ts",
+    "demo:break-downstream": "ts-node --prefer-ts-exts src/scripts/break-downstream.ts",
+    "demo:restore-downstream": "ts-node --prefer-ts-exts src/scripts/restore-downstream.ts",
     "recovery:start": "ts-node --prefer-ts-exts src/scripts/start-recovery.ts"
   },
   "dependencies": {
