@@ -6,6 +6,7 @@ import {
   resolveDemoQueueUrls,
   resolveDemoRecoveryStore,
 } from "./aws";
+import { DownstreamStatus } from "../shared/recovery";
 
 async function main(): Promise<void> {
   const urls = await resolveDemoQueueUrls();
@@ -15,6 +16,7 @@ async function main(): Promise<void> {
   await purgeQueue(urls.dlqUrl);
   await ledger.clearShipments();
   await recovery.clear();
+  await recovery.setDownstreamStatus(DownstreamStatus.Healthy);
   const queue = await getQueueDepth(urls.queueUrl);
   const dlq = await getQueueDepth(urls.dlqUrl);
 
@@ -23,6 +25,7 @@ async function main(): Promise<void> {
   console.log("  ShipmentsDLQ purged");
   console.log("  DemoLedger shipment records cleared");
   console.log("  DemoLedger quarantine and recovery records cleared");
+  console.log("  Downstream restored to healthy");
   console.log(`  ShipmentsQueue: ${queue.visible}`);
   console.log(`  ShipmentsDLQ:    ${dlq.visible}`);
 }
