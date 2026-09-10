@@ -1,22 +1,8 @@
-import {
-  formatDemoAwsError,
-  getQueueDepth,
-  purgeQueue,
-  resolveDemoLedger,
-  resolveDemoQueueUrls,
-  resolveDemoRecoveryStore,
-} from "./aws";
-import { DownstreamStatus } from "../shared/recovery";
+import { formatDemoAwsError, getQueueDepth } from "./aws";
+import { resetDemoEnvironment } from "./demo-ops";
 
 async function main(): Promise<void> {
-  const urls = await resolveDemoQueueUrls();
-  const ledger = await resolveDemoLedger();
-  const recovery = await resolveDemoRecoveryStore();
-  await purgeQueue(urls.queueUrl);
-  await purgeQueue(urls.dlqUrl);
-  await ledger.clearShipments();
-  await recovery.clear();
-  await recovery.setDownstreamStatus(DownstreamStatus.Healthy);
+  const urls = await resetDemoEnvironment();
   const queue = await getQueueDepth(urls.queueUrl);
   const dlq = await getQueueDepth(urls.dlqUrl);
 

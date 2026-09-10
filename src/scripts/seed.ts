@@ -1,12 +1,7 @@
-import { DEMO_SHIPMENTS } from "../fixtures/shipments";
 import { EXPECTED_DLQ_DEPTH } from "../shared/demo";
-import {
-  formatDemoStatus,
-  queuesAreDirty,
-  shipmentIdOf,
-  waitUntil,
-} from "../shared/demo-status";
-import { formatDemoAwsError, getQueueDepth, resolveDemoQueueUrls, sendJsonMessage } from "./aws";
+import { formatDemoStatus, queuesAreDirty } from "../shared/demo-status";
+import { formatDemoAwsError, getQueueDepth, resolveDemoQueueUrls } from "./aws";
+import { seedDemoShipments, waitForSeededDlq } from "./demo-ops";
 
 async function main(): Promise<void> {
   const wait = !process.argv.includes("--no-wait");
@@ -19,23 +14,15 @@ async function main(): Promise<void> {
   }
 
   console.log("Seeded:");
-  for (const shipment of DEMO_SHIPMENTS) {
-    const messageId = await sendJsonMessage(urls.queueUrl, shipment);
-    console.log(`${shipmentIdOf(shipment)}  ${messageId}`);
+  for (const seeded of await seedDemoShipments()) {
+    console.log(`${seeded.shipmentId}  ${seeded.messageId}`);
   }
 
   if (!wait) {
     return;
   }
 
-  const reached = await waitUntil(
-    async () => {
-      const dlq = await getQueueDepth(urls.dlqUrl);
-      return dlq.visible >= EXPECTED_DLQ_DEPTH;
-    },
-    { timeoutMs: 90_000, intervalMs: 2_000 },
-  );
-
+  const reached = await waitForSeededDlq();
   const queue = await getQueueDepth(urls.queueUrl);
   const dlq = await getQueueDepth(urls.dlqUrl);
   console.log("");

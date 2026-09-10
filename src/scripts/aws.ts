@@ -2,6 +2,7 @@ import {
   CloudFormationClient,
   DescribeStacksCommand,
 } from "@aws-sdk/client-cloudformation";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
   GetQueueAttributesCommand,
   PurgeQueueCommand,
@@ -16,6 +17,13 @@ import {
   RECOVERY_ALIAS_OUTPUT,
 } from "../shared/demo";
 import type { QueueDepth } from "../shared/demo-status";
+import {
+  DEMO_RECOVERY_BATCH_SIZE,
+  DEMO_RECOVERY_MAX_FAILURE_RATE,
+  DEMO_RECOVERY_REPLAY_DELAY_SECONDS,
+  createRecoveryId,
+  type RecoveryStartEvent,
+} from "../shared/recovery";
 import { DynamoRecoveryStore } from "../shared/recovery-repo";
 import { DynamoShipmentLedger } from "../shared/shipments-repo";
 
@@ -26,6 +34,7 @@ export interface DemoQueueUrls {
 
 const sqs = new SQSClient({});
 const cloudFormation = new CloudFormationClient({});
+const lambda = new LambdaClient({});
 
 export function formatDemoAwsError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -119,8 +128,48 @@ export async function getQueueDepth(queueUrl: string): Promise<QueueDepth> {
   };
 }
 
+export async function invokeDemoRecovery(): Promise<string> {
+  const functionArn = await resolveRecoveryAliasArn();
+  const recoveryId = createRecoveryId();
+  const event: RecoveryStartEvent = {
+    recoveryId,
+    batchSize: DEMO_RECOVERY_BATCH_SIZE,
+    maxFailureRate: DEMO_RECOVERY_MAX_FAILURE_RATE,
+    replayDelaySeconds: DEMO_RECOVERY_REPLAY_DELAY_SECONDS,
+  };
+
+  // Durable functions with executionTimeout > 15 minutes cannot use RequestResponse.
+  const result = await lambda.send(
+    new InvokeCommand({
+      FunctionName: functionArn,
+      InvocationType: "Event",
+      DurableExecutionName: recoveryId,
+      Payload: Buffer.from(JSON.stringify(event)),
+    }),
+  );
+
+  if (result.FunctionError) {
+    throw new Error(
+      result.Payload ? Buffer.from(result.Payload).toString("utf8") : result.FunctionError,
+    );
+  }
+  if (result.StatusCode && result.StatusCode >= 300) {
+    throw new Error(`Recovery invoke failed with status ${result.StatusCode}`);
+  }
+  return recoveryId;
+}
+
 export async function purgeQueue(queueUrl: string): Promise<void> {
-  await sqs.send(new PurgeQueueCommand({ QueueUrl: queueUrl }));
+  try {
+    await sqs.send(new PurgeQueueCommand({ QueueUrl: queueUrl }));
+  } catch (error: unknown) {
+    if (isPurgeInProgress(error)) {
+      throw new Error(
+        "SQS purge is limited to once per 60 seconds. Wait a minute and retry npm run demo:reset.",
+      );
+    }
+    throw error;
+  }
 }
 
 export async function sendJsonMessage(
@@ -137,4 +186,13 @@ export async function sendJsonMessage(
     throw new Error("SQS SendMessage did not return a MessageId");
   }
   return result.MessageId;
+}
+
+function isPurgeInProgress(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { name?: string; Code?: string; code?: string; message?: string };
+  const code = `${candidate.name ?? ""} ${candidate.Code ?? ""} ${candidate.code ?? ""} ${candidate.message ?? ""}`;
+  return /PurgeQueueInProgress/i.test(code);
 }
