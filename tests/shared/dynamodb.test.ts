@@ -1,4 +1,6 @@
 import {
+  CONFIG_PK,
+  isConfigPk,
   isQuarantinePk,
   isRecoveryJobPk,
   isRecoveryMessagePk,
@@ -22,5 +24,8 @@ describe("demo ledger keys", () => {
       recoveryId: "rec-1",
       messageId: "msg-003",
     });
+    expect(CONFIG_PK).toBe("CONFIG#DEMO");
+    expect(isConfigPk("CONFIG#DEMO")).toBe(true);
+    expect(isConfigPk("RECOVERY#rec-1")).toBe(false);
   });
 });

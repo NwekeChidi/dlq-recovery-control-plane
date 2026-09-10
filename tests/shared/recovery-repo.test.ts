@@ -1,5 +1,10 @@
 import { FailureClass, RecoveryAction } from "../../src/shared/failure";
-import { RecoveryJobStatus, createStartedRecoveryJob } from "../../src/shared/recovery";
+import {
+  DownstreamStatus,
+  RecoveryJobStatus,
+  ReplayResult,
+  createStartedRecoveryJob,
+} from "../../src/shared/recovery";
 import { InMemoryRecoveryStore } from "../../src/shared/recovery-repo";
 
 describe("InMemoryRecoveryStore", () => {
@@ -73,5 +78,29 @@ describe("InMemoryRecoveryStore", () => {
     await expect(store.listQuarantines()).resolves.toEqual([]);
     await expect(store.listRecoveryJobs()).resolves.toEqual([]);
     await expect(store.listRecoveryMessages()).resolves.toEqual([]);
+    await expect(store.getDownstreamStatus()).resolves.toBe(DownstreamStatus.Healthy);
+  });
+
+  test("records explicit replay SUCCESS and FAILED results", async () => {
+    const store = new InMemoryRecoveryStore();
+    await store.putRecoveryMessage({
+      recoveryId: "rec-1",
+      messageId: "msg-001",
+      failureClass: FailureClass.Transient,
+      action: RecoveryAction.Replay,
+      originalPayload: { shipmentId: "SHP-001" },
+      replayResult: ReplayResult.Sent,
+      createdAt: "2026-09-06T09:00:00.000Z",
+    });
+
+    await store.markReplayResult("rec-1", "msg-001", ReplayResult.Success);
+    await expect(store.getRecoveryMessage("rec-1", "msg-001")).resolves.toMatchObject({
+      replayResult: ReplayResult.Success,
+    });
+
+    await store.setDownstreamStatus(DownstreamStatus.Broken);
+    await expect(store.getDownstreamStatus()).resolves.toBe(DownstreamStatus.Broken);
+    await store.clear();
+    await expect(store.getDownstreamStatus()).resolves.toBe(DownstreamStatus.Healthy);
   });
 });

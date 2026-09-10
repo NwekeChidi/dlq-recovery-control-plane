@@ -25,6 +25,18 @@ describe("processShipment", () => {
     ).resolves.toMatchObject({ shipmentId: "SHP-001" });
   });
 
+  test("authorized replay fails when downstream is broken, without dispatching", async () => {
+    const dispatched: string[] = [];
+    await expect(
+      processShipment(shp001Transient, {
+        recoveryId: "REC-42",
+        downstreamBroken: true,
+        onDispatch: (shipment) => dispatched.push(shipment.shipmentId),
+      }),
+    ).rejects.toBeInstanceOf(TransientCarrierError);
+    expect(dispatched).toEqual([]);
+  });
+
   test("SHP-002 throws UnsupportedSchemaError", async () => {
     await expect(processShipment(shp002LegacyV1)).rejects.toBeInstanceOf(UnsupportedSchemaError);
   });
