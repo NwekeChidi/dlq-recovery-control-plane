@@ -1,8 +1,10 @@
 import {
-  ChangeMessageVisibilityCommand,
+  DeleteMessageCommand,
   ReceiveMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
+
+export const DLQ_RECEIVE_VISIBILITY_SECONDS = 90;
 
 export interface DlqMessage {
   messageId: string;
@@ -28,11 +30,11 @@ export async function loadDlqBatch(
       QueueUrl: queueUrl,
       MaxNumberOfMessages: batchSize,
       WaitTimeSeconds: 1,
-      VisibilityTimeout: 30,
+      VisibilityTimeout: DLQ_RECEIVE_VISIBILITY_SECONDS,
     }),
   );
 
-  const messages = (result.Messages ?? []).flatMap((message) => {
+  return (result.Messages ?? []).flatMap((message) => {
     if (!message.MessageId || !message.ReceiptHandle || message.Body === undefined) {
       return [];
     }
@@ -44,19 +46,17 @@ export async function loadDlqBatch(
       },
     ];
   });
+}
 
-  // P8 records decisions only. Restore visibility so the DLQ is not drained.
-  await Promise.all(
-    messages.map((message) =>
-      sqs.send(
-        new ChangeMessageVisibilityCommand({
-          QueueUrl: queueUrl,
-          ReceiptHandle: message.receiptHandle,
-          VisibilityTimeout: 0,
-        }),
-      ),
-    ),
+export async function deleteDlqMessage(
+  sqs: SQSClient,
+  queueUrl: string,
+  receiptHandle: string,
+): Promise<void> {
+  await sqs.send(
+    new DeleteMessageCommand({
+      QueueUrl: queueUrl,
+      ReceiptHandle: receiptHandle,
+    }),
   );
-
-  return messages;
 }

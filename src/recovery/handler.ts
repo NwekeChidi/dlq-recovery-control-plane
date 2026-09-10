@@ -2,9 +2,10 @@ import { SQSClient } from "@aws-sdk/client-sqs";
 import type { DurableContext } from "@aws/durable-execution-sdk-js";
 import { withDurableExecution } from "@aws/durable-execution-sdk-js";
 import { randomUUID } from "node:crypto";
-import { loadDlqBatch, parseDlqBody, type DlqMessage } from "./load";
+import { deleteDlqMessage, loadDlqBatch, parseDlqBody, type DlqMessage } from "./load";
 import { recordRecoveryDecision, triageLoadedMessage } from "./job";
 import { isTerminalHold } from "./quarantine";
+import { buildReplayEnvelope, replayOutcome, sendReplay, type ReplayEnvelope } from "./replay";
 import { RecoveryAction } from "../shared/failure";
 import { DynamoRecoveryStore } from "../shared/recovery-repo";
 import {
@@ -23,10 +24,13 @@ export interface RecoveryStartResult {
   suppressedCount: number;
   replayCandidateCount: number;
   patchCandidateCount: number;
+  recoveredCount: number;
 }
 
 export interface RecoveryHandlerDeps {
   loadBatch: (batchSize: number) => Promise<DlqMessage[]>;
+  replay: (envelope: ReplayEnvelope) => Promise<void>;
+  deleteMessage: (receiptHandle: string) => Promise<void>;
   ledger: ShipmentLedger;
   store: RecoveryStore;
   now?: () => string;
@@ -68,6 +72,7 @@ export async function runRecovery(
   const loaded = await context.step("load-batch", async () => deps.loadBatch(knobs.batchSize));
 
   const decisions = [];
+  let recoveredCount = 0;
   for (const message of loaded) {
     const classified = await context.step(`triage-${message.messageId}`, async () =>
       triageLoadedMessage(parseDlqBody(message.body), deps.ledger),
@@ -83,10 +88,30 @@ export async function runRecovery(
         now: now(),
       }),
     );
+    const sent = await context.step(`replay-${message.messageId}`, async () => {
+      const envelope = buildReplayEnvelope({
+        recoveryId,
+        originalMessageId: message.messageId,
+        record: recorded,
+      });
+      if (!envelope) {
+        await deps.store.putRecoveryMessage(replayOutcome(recorded));
+        return false;
+      }
+      await deps.replay(envelope);
+      await deps.store.putRecoveryMessage(replayOutcome(recorded));
+      return true;
+    });
+    await context.step(`delete-${message.messageId}`, async () => {
+      await deps.deleteMessage(message.receiptHandle);
+    });
     decisions.push(recorded);
+    if (sent) {
+      recoveredCount += 1;
+    }
   }
 
-  const summary = summarizeDecisions(recoveryId, decisions);
+  const summary = summarizeDecisions(recoveryId, decisions, recoveredCount);
   await context.step("complete-job", async () => {
     const job = await deps.store.getRecoveryJob(recoveryId);
     if (!job) {
@@ -99,6 +124,7 @@ export async function runRecovery(
           processedCount: summary.processedCount,
           quarantinedCount: summary.quarantinedCount,
           suppressedCount: summary.suppressedCount,
+          recoveredCount: summary.recoveredCount,
         },
         now(),
       ),
@@ -111,6 +137,7 @@ export async function runRecovery(
 function summarizeDecisions(
   recoveryId: string,
   decisions: Array<{ action: RecoveryAction }>,
+  recoveredCount: number,
 ): RecoveryStartResult {
   return {
     recoveryId,
@@ -121,6 +148,7 @@ function summarizeDecisions(
       .length,
     patchCandidateCount: decisions.filter((decision) => decision.action === RecoveryAction.Patch)
       .length,
+    recoveredCount,
   };
 }
 
@@ -131,12 +159,17 @@ function createRecoveryId(): string {
 function depsFromEnv(): RecoveryHandlerDeps {
   const tableName = process.env.DEMO_LEDGER_TABLE_NAME;
   const dlqUrl = process.env.SHIPMENTS_DLQ_URL;
-  if (!tableName || !dlqUrl) {
-    throw new Error("DEMO_LEDGER_TABLE_NAME and SHIPMENTS_DLQ_URL are required");
+  const queueUrl = process.env.SHIPMENTS_QUEUE_URL;
+  if (!tableName || !dlqUrl || !queueUrl) {
+    throw new Error(
+      "DEMO_LEDGER_TABLE_NAME, SHIPMENTS_DLQ_URL, and SHIPMENTS_QUEUE_URL are required",
+    );
   }
   const sqs = new SQSClient({});
   return {
     loadBatch: (batchSize) => loadDlqBatch(sqs, dlqUrl, batchSize),
+    replay: (envelope) => sendReplay(sqs, queueUrl, envelope).then(() => undefined),
+    deleteMessage: (receiptHandle) => deleteDlqMessage(sqs, dlqUrl, receiptHandle),
     ledger: DynamoShipmentLedger.fromTableName(tableName),
     store: DynamoRecoveryStore.fromTableName(tableName),
   };
