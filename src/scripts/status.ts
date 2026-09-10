@@ -13,17 +13,20 @@ async function main(): Promise<void> {
   const recovery = await resolveDemoRecoveryStore();
   const queue = await getQueueDepth(urls.queueUrl);
   const dlq = await getQueueDepth(urls.dlqUrl);
-  const [shipments, quarantines, recoveryJobs, recoveryMessages] = await Promise.all([
-    ledger.listShipmentStates(),
-    recovery.listQuarantines(),
-    recovery.listRecoveryJobs(),
-    recovery.listRecoveryMessages(),
-  ]);
+  const [shipments, quarantines, recoveryJobs, recoveryMessages, downstreamStatus] =
+    await Promise.all([
+      ledger.listShipmentStates(),
+      recovery.listQuarantines(),
+      recovery.listRecoveryJobs(),
+      recovery.listRecoveryMessages(),
+      recovery.getDownstreamStatus(),
+    ]);
   console.log(
     formatDemoStatus(queue, dlq, shipments, {
       quarantines,
       recoveryJobs,
       recoveryMessages,
+      downstreamStatus,
     }),
   );
 }
