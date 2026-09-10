@@ -45,7 +45,6 @@ describe("recovery durable handler", () => {
       ledger,
       store,
       now: () => "2026-09-10T05:00:00.000Z",
-      createRecoveryId: () => "REC-test",
       loadBatch: async (batchSize) => queued.slice(0, batchSize),
       replay: async (envelope) => {
         sent.push(envelope);
@@ -56,7 +55,7 @@ describe("recovery durable handler", () => {
     });
 
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
-    const execution = await runner.run({ payload: { batchSize: 4 } });
+    const execution = await runner.run({ payload: { batchSize: 4, recoveryId: "REC-test" } });
 
     expect(execution.getStatus()).toBe(ExecutionStatus.SUCCEEDED);
     expect(execution.getResult()).toEqual({

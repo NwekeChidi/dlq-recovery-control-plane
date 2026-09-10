@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { FailureClass, RecoveryAction } from "./failure";
 
 export const DEMO_RECOVERY_BATCH_SIZE = 2;
@@ -99,6 +100,7 @@ export function createStartedRecoveryJob(input: {
 }
 
 export interface RecoveryStartEvent {
+  recoveryId?: string;
   batchSize?: number;
   maxFailureRate?: number;
   replayDelaySeconds?: number;
@@ -151,4 +153,8 @@ function clampInt(value: number | undefined, fallback: number, min: number, max:
     return fallback;
   }
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+export function createRecoveryId(): string {
+  return `REC-${randomUUID()}`;
 }

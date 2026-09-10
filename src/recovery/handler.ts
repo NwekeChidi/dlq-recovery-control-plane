@@ -1,7 +1,6 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
 import type { DurableContext } from "@aws/durable-execution-sdk-js";
 import { withDurableExecution } from "@aws/durable-execution-sdk-js";
-import { randomUUID } from "node:crypto";
 import { deleteDlqMessage, loadDlqBatch, parseDlqBody, type DlqMessage } from "./load";
 import { recordRecoveryDecision, triageLoadedMessage } from "./job";
 import { isTerminalHold } from "./quarantine";
@@ -10,6 +9,7 @@ import { RecoveryAction } from "../shared/failure";
 import { DynamoRecoveryStore } from "../shared/recovery-repo";
 import {
   completeRecoveryJob,
+  createRecoveryId,
   createStartedRecoveryJob,
   resolveRecoveryKnobs,
   type RecoveryStartEvent,
@@ -56,7 +56,7 @@ export async function runRecovery(
   const now = deps.now ?? (() => new Date().toISOString());
 
   const recoveryId = await context.step("create-job", async () => {
-    const id = (deps.createRecoveryId ?? createRecoveryId)();
+    const id = event.recoveryId ?? (deps.createRecoveryId ?? createRecoveryId)();
     await deps.store.putRecoveryJob(
       createStartedRecoveryJob({
         recoveryId: id,
@@ -150,10 +150,6 @@ function summarizeDecisions(
       .length,
     recoveredCount,
   };
-}
-
-function createRecoveryId(): string {
-  return `REC-${randomUUID()}`;
 }
 
 function depsFromEnv(): RecoveryHandlerDeps {
