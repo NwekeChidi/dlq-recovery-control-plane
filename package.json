@@ -20,7 +20,8 @@
     "demo:break-downstream": "ts-node --prefer-ts-exts src/scripts/break-downstream.ts",
     "demo:restore-downstream": "ts-node --prefer-ts-exts src/scripts/restore-downstream.ts",
     "demo:smoke": "ts-node --prefer-ts-exts src/scripts/smoke.ts",
-    "recovery:start": "ts-node --prefer-ts-exts src/scripts/start-recovery.ts"
+    "recovery:start": "ts-node --prefer-ts-exts src/scripts/start-recovery.ts",
+    "slides:pptx": "node slides/build-pptx.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1127.0",
@@ -40,6 +41,7 @@
     "aws-cdk": "2.1136.0",
     "esbuild": "0.25.12",
     "jest": "29.7.0",
+    "pptxgenjs": "4.0.1",
     "ts-jest": "29.4.12",
     "ts-node": "10.9.2",
     "typescript": "5.8.3"
