@@ -48,16 +48,24 @@ export interface DemoStatusExtras {
 
 const LABEL_WIDTH = 18;
 
+export interface DemoStatusLabels {
+  /** Header line for the source depth. Set to null to omit it (e.g. a push source). */
+  queue?: string | null;
+  dlq?: string;
+}
+
 export function formatDemoStatus(
   queue: QueueDepth,
   dlq: QueueDepth,
   shipments: Array<{ shipmentId: string; status: ShipmentDispatchStatus }> = [],
   extras: DemoStatusExtras = {},
+  labels: DemoStatusLabels = {},
 ): string {
-  const lines = [
-    labeled("ShipmentsQueue", formatQueueValue(queue)),
-    labeled("ShipmentsDLQ", dlq.visible),
-  ];
+  const lines: string[] = [];
+  if (labels.queue !== null) {
+    lines.push(labeled(labels.queue ?? "ShipmentsQueue", formatQueueValue(queue)));
+  }
+  lines.push(labeled(labels.dlq ?? "ShipmentsDLQ", dlq.visible));
 
   if (extras.downstreamStatus !== undefined) {
     lines.push(labeled("Downstream", extras.downstreamStatus));

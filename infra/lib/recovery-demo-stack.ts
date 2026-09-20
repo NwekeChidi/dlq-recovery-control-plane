@@ -1,17 +1,29 @@
 import * as path from "node:path";
 import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps } from "aws-cdk-lib";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
+import { EventBus, Rule } from "aws-cdk-lib/aws-events";
+import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import { Alias, Architecture, Runtime } from "aws-cdk-lib/aws-lambda";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import { Topic } from "aws-cdk-lib/aws-sns";
+import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { Queue } from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 import {
   DLQ_URL_OUTPUT,
+  EVENT_BUS_NAME_OUTPUT,
+  EVENT_DLQ_URL_OUTPUT,
   LEDGER_TABLE_OUTPUT,
   QUEUE_URL_OUTPUT,
   RECOVERY_ALIAS_OUTPUT,
+  RECOVERY_EVENT_DETAIL_TYPE,
+  RECOVERY_EVENT_SOURCE,
   RECOVERY_LIVE_ALIAS,
+  SHIPMENT_EVENT_DETAIL_TYPE,
+  SHIPMENT_EVENT_SOURCE,
+  SNS_DLQ_URL_OUTPUT,
+  SNS_TOPIC_ARN_OUTPUT,
 } from "../../src/shared/demo";
 
 export class RecoveryDemoStack extends Stack {
@@ -21,6 +33,12 @@ export class RecoveryDemoStack extends Stack {
   public readonly recoveryFunction: NodejsFunction;
   public readonly recoveryLiveAlias: Alias;
   public readonly demoLedger: Table;
+  public readonly shipmentEventBus: EventBus;
+  public readonly shipmentEventsDlq: Queue;
+  public readonly eventBridgeProcessor: NodejsFunction;
+  public readonly shipmentTopic: Topic;
+  public readonly shipmentNotificationsDlq: Queue;
+  public readonly snsProcessor: NodejsFunction;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -102,6 +120,92 @@ export class RecoveryDemoStack extends Stack {
       version: this.recoveryFunction.currentVersion,
     });
 
+    // EventBridge failure path: a rule delivers shipment events to a Lambda
+    // target; failed deliveries redrive to an SQS DLQ, and the same durable
+    // recovery job (invoked with replayTarget=eventbridge) replays them back
+    // onto the bus.
+    this.shipmentEventBus = new EventBus(this, "ShipmentEventBus");
+
+    this.shipmentEventsDlq = new Queue(this, "ShipmentEventsDLQ", {
+      retentionPeriod: Duration.days(14),
+    });
+
+    this.eventBridgeProcessor = new NodejsFunction(this, "ShipmentEventProcessor", {
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      entry: path.join(__dirname, "../../src/processor/eventbridge-handler.ts"),
+      handler: "handler",
+      timeout: Duration.seconds(10),
+      memorySize: 256,
+      environment: {
+        DEMO_LEDGER_TABLE_NAME: this.demoLedger.tableName,
+      },
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: "node24",
+      },
+    });
+
+    this.demoLedger.grantReadWriteData(this.eventBridgeProcessor);
+
+    new Rule(this, "ShipmentEventsRule", {
+      eventBus: this.shipmentEventBus,
+      eventPattern: {
+        source: [SHIPMENT_EVENT_SOURCE, RECOVERY_EVENT_SOURCE],
+        detailType: [SHIPMENT_EVENT_DETAIL_TYPE, RECOVERY_EVENT_DETAIL_TYPE],
+      },
+      targets: [
+        new LambdaFunction(this.eventBridgeProcessor, {
+          deadLetterQueue: this.shipmentEventsDlq,
+          retryAttempts: 2,
+          maxEventAge: Duration.seconds(60),
+        }),
+      ],
+    });
+
+    // Recovery drains the EventBridge target DLQ and replays back onto the bus.
+    this.shipmentEventsDlq.grantConsumeMessages(this.recoveryFunction);
+    this.shipmentEventBus.grantPutEventsTo(this.recoveryFunction);
+
+    // SNS failure path: a topic fans out to a Lambda subscription; failed
+    // deliveries redrive to an SQS DLQ as an SNS Notification envelope, and the
+    // same durable recovery job (replayTarget=sns) republishes onto the topic.
+    this.shipmentTopic = new Topic(this, "ShipmentTopic");
+
+    this.shipmentNotificationsDlq = new Queue(this, "ShipmentNotificationsDLQ", {
+      retentionPeriod: Duration.days(14),
+    });
+
+    this.snsProcessor = new NodejsFunction(this, "ShipmentNotificationProcessor", {
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      entry: path.join(__dirname, "../../src/processor/sns-handler.ts"),
+      handler: "handler",
+      timeout: Duration.seconds(10),
+      memorySize: 256,
+      environment: {
+        DEMO_LEDGER_TABLE_NAME: this.demoLedger.tableName,
+      },
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: "node24",
+      },
+    });
+
+    this.demoLedger.grantReadWriteData(this.snsProcessor);
+
+    this.shipmentTopic.addSubscription(
+      new LambdaSubscription(this.snsProcessor, {
+        deadLetterQueue: this.shipmentNotificationsDlq,
+      }),
+    );
+
+    // Recovery drains the SNS subscription DLQ and republishes onto the topic.
+    this.shipmentNotificationsDlq.grantConsumeMessages(this.recoveryFunction);
+    this.shipmentTopic.grantPublish(this.recoveryFunction);
+
     new CfnOutput(this, QUEUE_URL_OUTPUT, {
       value: this.shipmentsQueue.queueUrl,
       description: "Source queue URL for demo:seed / demo:status / demo:reset",
@@ -120,6 +224,26 @@ export class RecoveryDemoStack extends Stack {
     new CfnOutput(this, RECOVERY_ALIAS_OUTPUT, {
       value: this.recoveryLiveAlias.functionArn,
       description: "Qualified alias ARN for npm run recovery:start",
+    });
+
+    new CfnOutput(this, EVENT_BUS_NAME_OUTPUT, {
+      value: this.shipmentEventBus.eventBusName,
+      description: "EventBridge bus for demo:seed:eb and EventBridge-path replays",
+    });
+
+    new CfnOutput(this, EVENT_DLQ_URL_OUTPUT, {
+      value: this.shipmentEventsDlq.queueUrl,
+      description: "EventBridge target DLQ URL for demo:status:eb and EventBridge-path recovery",
+    });
+
+    new CfnOutput(this, SNS_TOPIC_ARN_OUTPUT, {
+      value: this.shipmentTopic.topicArn,
+      description: "SNS topic ARN for demo:seed:sns and SNS-path replays",
+    });
+
+    new CfnOutput(this, SNS_DLQ_URL_OUTPUT, {
+      value: this.shipmentNotificationsDlq.queueUrl,
+      description: "SNS subscription DLQ URL for demo:status:sns and SNS-path recovery",
     });
   }
 }

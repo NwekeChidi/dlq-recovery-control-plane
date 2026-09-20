@@ -1,11 +1,20 @@
+import { EventBridgeClient } from "@aws-sdk/client-eventbridge";
+import { SNSClient } from "@aws-sdk/client-sns";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import type { DurableContext } from "@aws/durable-execution-sdk-js";
 import { withDurableExecution } from "@aws/durable-execution-sdk-js";
-import { deleteDlqMessage, loadDlqBatch, parseDlqBody, type DlqMessage } from "./load";
+import { deleteDlqMessage, loadDlqBatch, type DlqMessage } from "./load";
 import { observeReplayHealth, type RecoveryHealth } from "./observe";
 import { recordRecoveryDecision, triageLoadedMessage } from "./job";
 import { isTerminalHold } from "./quarantine";
-import { buildReplayEnvelope, replayOutcome, sendReplay, type ReplayEnvelope } from "./replay";
+import { buildReplayEnvelope, replayOutcome, type ReplayEnvelope } from "./replay";
+import {
+  EventBridgeReplayTarget,
+  SnsReplayTarget,
+  SqsReplayTarget,
+  type ReplayTarget,
+} from "./replay-target";
+import { parseSourceEnvelope } from "./source-envelope";
 import { RecoveryAction } from "../shared/failure";
 import {
   RecoveryLogEvent,
@@ -71,7 +80,7 @@ export function createRecoveryHandler(deps: RecoveryHandlerDeps) {
 }
 
 export const handler = withDurableExecution<RecoveryStartEvent, RecoveryStartResult>(
-  async (event, context) => runRecovery(event ?? {}, context, depsFromEnv()),
+  async (event, context) => runRecovery(event ?? {}, context, depsFromEnv(event ?? {})),
 );
 
 export async function runRecovery(
@@ -128,7 +137,7 @@ export async function runRecovery(
     let replayedThisBatch = 0;
     for (const message of loaded) {
       const classified = await context.step(`triage-${batchIndex}-${message.messageId}`, async () =>
-        triageLoadedMessage(parseDlqBody(message.body), deps.ledger),
+        triageLoadedMessage(parseSourceEnvelope(message.body).originalEvent, deps.ledger),
       );
       const recorded = await context.step(`record-${batchIndex}-${message.messageId}`, async () => {
         const record = await recordRecoveryDecision({
@@ -343,9 +352,9 @@ async function requireJob(store: RecoveryStore, recoveryId: string) {
   return job;
 }
 
-function depsFromEnv(): RecoveryHandlerDeps {
+function depsFromEnv(event: RecoveryStartEvent): RecoveryHandlerDeps {
   const tableName = process.env.DEMO_LEDGER_TABLE_NAME;
-  const dlqUrl = process.env.SHIPMENTS_DLQ_URL;
+  const dlqUrl = event.dlqUrl ?? process.env.SHIPMENTS_DLQ_URL;
   const queueUrl = process.env.SHIPMENTS_QUEUE_URL;
   if (!tableName || !dlqUrl || !queueUrl) {
     throw new Error(
@@ -353,11 +362,46 @@ function depsFromEnv(): RecoveryHandlerDeps {
     );
   }
   const sqs = new SQSClient({});
+  const replayTarget = resolveReplayTarget(event, sqs, queueUrl);
   return {
     loadBatch: (batchSize) => loadDlqBatch(sqs, dlqUrl, batchSize),
-    replay: (envelope) => sendReplay(sqs, queueUrl, envelope).then(() => undefined),
+    replay: (envelope) => replayTarget.send(envelope).then(() => undefined),
     deleteMessage: (receiptHandle) => deleteDlqMessage(sqs, dlqUrl, receiptHandle),
     ledger: DynamoShipmentLedger.fromTableName(tableName),
     store: DynamoRecoveryStore.fromTableName(tableName),
   };
+}
+
+/**
+ * Selects where authorized replays are published. The demo defaults to the SQS
+ * source queue; a start event (or RECOVERY_REPLAY_TARGET env) can swap the
+ * egress to SNS or EventBridge without touching the triage/patch/replay/
+ * observe/stop control plane. The start event wins so one deployed function can
+ * recover either the SQS or the EventBridge failure path.
+ */
+function resolveReplayTarget(
+  event: RecoveryStartEvent,
+  sqs: SQSClient,
+  queueUrl: string,
+): ReplayTarget {
+  const kind = (event.replayTarget ?? process.env.RECOVERY_REPLAY_TARGET ?? "sqs").toLowerCase();
+  if (kind === "sns") {
+    const topicArn = event.snsTopicArn ?? process.env.RECOVERY_SNS_TOPIC_ARN;
+    if (!topicArn) {
+      throw new Error("snsTopicArn is required when replayTarget is sns");
+    }
+    return new SnsReplayTarget(new SNSClient({}), topicArn);
+  }
+  if (kind === "eventbridge") {
+    const eventBusName = event.eventBusName ?? process.env.RECOVERY_EVENT_BUS_NAME;
+    if (!eventBusName) {
+      throw new Error("eventBusName is required when replayTarget is eventbridge");
+    }
+    return new EventBridgeReplayTarget(new EventBridgeClient({}), {
+      eventBusName,
+      source: process.env.RECOVERY_EVENT_SOURCE,
+      detailType: process.env.RECOVERY_EVENT_DETAIL_TYPE,
+    });
+  }
+  return new SqsReplayTarget(sqs, queueUrl);
 }

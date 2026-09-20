@@ -7,8 +7,8 @@ describe("RecoveryDemoStack", () => {
     new RecoveryDemoStack(new cdk.App(), "TestStack"),
   );
 
-  test("creates the source queue and DLQ", () => {
-    template.resourceCountIs("AWS::SQS::Queue", 2);
+  test("creates the source queue, its DLQ, and the EventBridge + SNS target DLQs", () => {
+    template.resourceCountIs("AWS::SQS::Queue", 4);
   });
 
   test("source queue redrives to the DLQ after two receives", () => {
@@ -62,8 +62,67 @@ describe("RecoveryDemoStack", () => {
     template.hasOutput("RecoveryLiveAliasArn", {});
   });
 
-  test("creates a durable recovery function invoked through the live alias", () => {
-    template.resourceCountIs("AWS::Lambda::Function", 2);
+  test("wires an EventBridge failure path: bus, rule, target DLQ, and outputs", () => {
+    template.resourceCountIs("AWS::Events::EventBus", 1);
+    template.hasResourceProperties("AWS::Events::Rule", {
+      EventPattern: {
+        source: ["fulfilment.shipments", "taming-dlqs.recovery"],
+        "detail-type": ["ShipmentRequested", "ShipmentRecoveryReplay"],
+      },
+    });
+    template.hasOutput("ShipmentEventBusName", {});
+    template.hasOutput("ShipmentEventsDlqUrl", {});
+  });
+
+  test("gives the EventBridge rule target a dead-letter queue with limited retries", () => {
+    template.hasResourceProperties("AWS::Events::Rule", {
+      Targets: Match.arrayWith([
+        Match.objectLike({
+          DeadLetterConfig: { Arn: Match.anyValue() },
+          RetryPolicy: Match.objectLike({ MaximumRetryAttempts: 2 }),
+        }),
+      ]),
+    });
+  });
+
+  test("lets the recovery function replay onto the bus (events:PutEvents)", () => {
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "events:PutEvents",
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+  });
+
+  test("wires an SNS failure path: topic, Lambda subscription with DLQ, and outputs", () => {
+    template.resourceCountIs("AWS::SNS::Topic", 1);
+    template.hasResourceProperties("AWS::SNS::Subscription", {
+      Protocol: "lambda",
+      RedrivePolicy: Match.anyValue(),
+    });
+    template.hasOutput("ShipmentTopicArn", {});
+    template.hasOutput("ShipmentNotificationsDlqUrl", {});
+  });
+
+  test("lets the recovery function republish onto the topic (sns:Publish)", () => {
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "sns:Publish",
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+  });
+
+  test("creates a durable recovery function plus SQS, EventBridge, and SNS processors", () => {
+    template.resourceCountIs("AWS::Lambda::Function", 4);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Runtime: "nodejs24.x",
       Architectures: ["arm64"],

@@ -2,21 +2,30 @@ import {
   CloudFormationClient,
   DescribeStacksCommand,
 } from "@aws-sdk/client-cloudformation";
+import { EventBridgeClient, PutEventsCommand } from "@aws-sdk/client-eventbridge";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import {
   GetQueueAttributesCommand,
   PurgeQueueCommand,
   SQSClient,
   SendMessageCommand,
 } from "@aws-sdk/client-sqs";
+import { DEMO_SHIPMENTS } from "../fixtures/shipments";
 import {
   DEMO_STACK_NAME,
   DLQ_URL_OUTPUT,
+  EVENT_BUS_NAME_OUTPUT,
+  EVENT_DLQ_URL_OUTPUT,
   LEDGER_TABLE_OUTPUT,
   QUEUE_URL_OUTPUT,
   RECOVERY_ALIAS_OUTPUT,
+  SHIPMENT_EVENT_DETAIL_TYPE,
+  SHIPMENT_EVENT_SOURCE,
+  SNS_DLQ_URL_OUTPUT,
+  SNS_TOPIC_ARN_OUTPUT,
 } from "../shared/demo";
-import type { QueueDepth } from "../shared/demo-status";
+import { shipmentIdOf, type QueueDepth } from "../shared/demo-status";
 import {
   DEMO_RECOVERY_BATCH_SIZE,
   DEMO_RECOVERY_MAX_FAILURE_RATE,
@@ -35,6 +44,8 @@ export interface DemoQueueUrls {
 const sqs = new SQSClient({});
 const cloudFormation = new CloudFormationClient({});
 const lambda = new LambdaClient({});
+const eventBridge = new EventBridgeClient({});
+const sns = new SNSClient({});
 
 export function formatDemoAwsError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -98,6 +109,60 @@ export async function resolveRecoveryAliasArn(): Promise<string> {
   return aliasArn;
 }
 
+export async function resolveEventBusName(): Promise<string> {
+  const fromEnv = process.env.RECOVERY_EVENT_BUS_NAME;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const busName = (await stackOutputs())[EVENT_BUS_NAME_OUTPUT];
+  if (!busName) {
+    throw new Error(
+      `Missing ${EVENT_BUS_NAME_OUTPUT}. Deploy first, or set RECOVERY_EVENT_BUS_NAME.`,
+    );
+  }
+  return busName;
+}
+
+export async function resolveEventDlqUrl(): Promise<string> {
+  const fromEnv = process.env.SHIPMENT_EVENTS_DLQ_URL;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const dlqUrl = (await stackOutputs())[EVENT_DLQ_URL_OUTPUT];
+  if (!dlqUrl) {
+    throw new Error(
+      `Missing ${EVENT_DLQ_URL_OUTPUT}. Deploy first, or set SHIPMENT_EVENTS_DLQ_URL.`,
+    );
+  }
+  return dlqUrl;
+}
+
+export async function resolveSnsTopicArn(): Promise<string> {
+  const fromEnv = process.env.RECOVERY_SNS_TOPIC_ARN;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const topicArn = (await stackOutputs())[SNS_TOPIC_ARN_OUTPUT];
+  if (!topicArn) {
+    throw new Error(`Missing ${SNS_TOPIC_ARN_OUTPUT}. Deploy first, or set RECOVERY_SNS_TOPIC_ARN.`);
+  }
+  return topicArn;
+}
+
+export async function resolveSnsDlqUrl(): Promise<string> {
+  const fromEnv = process.env.SHIPMENT_NOTIFICATIONS_DLQ_URL;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const dlqUrl = (await stackOutputs())[SNS_DLQ_URL_OUTPUT];
+  if (!dlqUrl) {
+    throw new Error(
+      `Missing ${SNS_DLQ_URL_OUTPUT}. Deploy first, or set SHIPMENT_NOTIFICATIONS_DLQ_URL.`,
+    );
+  }
+  return dlqUrl;
+}
+
 async function stackOutputs(): Promise<Record<string, string>> {
   const stackName = process.env.DEMO_STACK_NAME ?? DEMO_STACK_NAME;
   const result = await cloudFormation.send(
@@ -128,7 +193,14 @@ export async function getQueueDepth(queueUrl: string): Promise<QueueDepth> {
   };
 }
 
-export async function invokeDemoRecovery(): Promise<string> {
+export type RecoveryPath = "sqs" | "eventbridge" | "sns";
+
+export interface RecoveryInvokeOptions {
+  /** Which failure path to recover. Defaults to the SQS-triggered Lambda path. */
+  path?: RecoveryPath;
+}
+
+export async function invokeDemoRecovery(options: RecoveryInvokeOptions = {}): Promise<string> {
   const functionArn = await resolveRecoveryAliasArn();
   const recoveryId = createRecoveryId();
   const event: RecoveryStartEvent = {
@@ -137,6 +209,18 @@ export async function invokeDemoRecovery(): Promise<string> {
     maxFailureRate: DEMO_RECOVERY_MAX_FAILURE_RATE,
     replayDelaySeconds: DEMO_RECOVERY_REPLAY_DELAY_SECONDS,
   };
+
+  if (options.path === "eventbridge") {
+    // Drain the EventBridge target DLQ and replay back onto the bus.
+    event.dlqUrl = await resolveEventDlqUrl();
+    event.replayTarget = "eventbridge";
+    event.eventBusName = await resolveEventBusName();
+  } else if (options.path === "sns") {
+    // Drain the SNS subscription DLQ and republish onto the topic.
+    event.dlqUrl = await resolveSnsDlqUrl();
+    event.replayTarget = "sns";
+    event.snsTopicArn = await resolveSnsTopicArn();
+  }
 
   // Durable functions with executionTimeout > 15 minutes cannot use RequestResponse.
   const result = await lambda.send(
@@ -157,6 +241,50 @@ export async function invokeDemoRecovery(): Promise<string> {
     throw new Error(`Recovery invoke failed with status ${result.StatusCode}`);
   }
   return recoveryId;
+}
+
+export async function seedEventBridgeShipments(): Promise<
+  { shipmentId: string; eventId: string }[]
+> {
+  const eventBusName = await resolveEventBusName();
+  const seeded: { shipmentId: string; eventId: string }[] = [];
+  for (const shipment of DEMO_SHIPMENTS) {
+    const result = await eventBridge.send(
+      new PutEventsCommand({
+        Entries: [
+          {
+            EventBusName: eventBusName,
+            Source: SHIPMENT_EVENT_SOURCE,
+            DetailType: SHIPMENT_EVENT_DETAIL_TYPE,
+            Detail: JSON.stringify(shipment),
+          },
+        ],
+      }),
+    );
+    const entry = result.Entries?.[0];
+    if (result.FailedEntryCount || !entry?.EventId) {
+      throw new Error(
+        `PutEvents failed for ${shipmentIdOf(shipment)}: ${entry?.ErrorMessage ?? "unknown error"}`,
+      );
+    }
+    seeded.push({ shipmentId: shipmentIdOf(shipment), eventId: entry.EventId });
+  }
+  return seeded;
+}
+
+export async function seedSnsShipments(): Promise<{ shipmentId: string; messageId: string }[]> {
+  const topicArn = await resolveSnsTopicArn();
+  const seeded: { shipmentId: string; messageId: string }[] = [];
+  for (const shipment of DEMO_SHIPMENTS) {
+    const result = await sns.send(
+      new PublishCommand({ TopicArn: topicArn, Message: JSON.stringify(shipment) }),
+    );
+    if (!result.MessageId) {
+      throw new Error(`SNS Publish for ${shipmentIdOf(shipment)} did not return a MessageId`);
+    }
+    seeded.push({ shipmentId: shipmentIdOf(shipment), messageId: result.MessageId });
+  }
+  return seeded;
 }
 
 export async function purgeQueue(queueUrl: string): Promise<void> {

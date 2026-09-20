@@ -9,6 +9,8 @@ async function main(): Promise<void> {
   console.log("Reset:");
   console.log("  ShipmentsQueue purged");
   console.log("  ShipmentsDLQ purged");
+  console.log("  ShipmentEventsDLQ purged");
+  console.log("  ShipmentNotificationsDLQ purged");
   console.log("  DemoLedger shipment records cleared");
   console.log("  DemoLedger quarantine and recovery records cleared");
   console.log("  Downstream restored to healthy");

@@ -113,11 +113,21 @@ export function createStartedRecoveryJob(input: {
   };
 }
 
+export type RecoveryReplayTargetKind = "sqs" | "sns" | "eventbridge";
+
 export interface RecoveryStartEvent {
   recoveryId?: string;
   batchSize?: number;
   maxFailureRate?: number;
   replayDelaySeconds?: number;
+  /** Override the DLQ this run drains (defaults to SHIPMENTS_DLQ_URL). */
+  dlqUrl?: string;
+  /** Override where authorized replays are published (defaults to sqs). */
+  replayTarget?: RecoveryReplayTargetKind;
+  /** EventBridge bus for replays when replayTarget is "eventbridge". */
+  eventBusName?: string;
+  /** SNS topic ARN for replays when replayTarget is "sns". */
+  snsTopicArn?: string;
 }
 
 export interface RecoveryKnobs {
