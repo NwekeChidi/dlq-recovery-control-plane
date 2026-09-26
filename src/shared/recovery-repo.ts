@@ -33,6 +33,41 @@ import {
 
 const DYNAMO_BATCH_WRITE_LIMIT = 25;
 
+/** DynamoDB TTL attribute (epoch seconds). Enabled on the table in the CDK stack. */
+export const LEDGER_TTL_ATTRIBUTE = "expiresAt";
+
+/** Default retention for job + per-message records when nothing overrides it. */
+export const DEFAULT_LEDGER_TTL_DAYS = 30;
+
+const SECONDS_PER_DAY = 86_400;
+
+/**
+ * Per-record-type retention. `recordTtlDays` covers job and recovery-message
+ * rows (routine recovery state). `quarantineTtlDays` is intentionally separate
+ * and defaults to "never" — quarantined originals are forensic/audit evidence
+ * (slide 11) and must not silently evaporate. A value <= 0 or undefined means
+ * that record type never expires.
+ */
+export interface LedgerTtlConfig {
+  recordTtlDays?: number;
+  quarantineTtlDays?: number;
+}
+
+export function ledgerTtlConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LedgerTtlConfig {
+  return {
+    recordTtlDays: numFromEnv(env.RECOVERY_LEDGER_TTL_DAYS, DEFAULT_LEDGER_TTL_DAYS),
+    quarantineTtlDays: numFromEnv(env.RECOVERY_QUARANTINE_TTL_DAYS, undefined),
+  };
+}
+
+function numFromEnv(value: string | undefined, fallback: number | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export class InMemoryRecoveryStore implements RecoveryStore {
   private readonly quarantines = new Map<string, QuarantineRecord>();
   private readonly jobs = new Map<string, RecoveryJobRecord>();
@@ -110,17 +145,43 @@ export class InMemoryRecoveryStore implements RecoveryStore {
   }
 }
 
+export interface DynamoRecoveryStoreOptions {
+  ttl?: LedgerTtlConfig;
+  /** Injectable clock (ms since epoch) for deterministic TTL in tests. */
+  now?: () => number;
+}
+
 export class DynamoRecoveryStore implements RecoveryStore {
+  private readonly ttl: LedgerTtlConfig;
+  private readonly now: () => number;
+
   constructor(
     private readonly doc: DynamoDBDocumentClient,
     private readonly tableName: string,
-  ) {}
+    options: DynamoRecoveryStoreOptions = {},
+  ) {
+    this.ttl = options.ttl ?? {};
+    this.now = options.now ?? (() => Date.now());
+  }
 
-  static fromTableName(tableName: string): DynamoRecoveryStore {
+  static fromTableName(
+    tableName: string,
+    options: DynamoRecoveryStoreOptions = { ttl: ledgerTtlConfigFromEnv() },
+  ): DynamoRecoveryStore {
     return new DynamoRecoveryStore(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       tableName,
+      options,
     );
+  }
+
+  /** Epoch-second expiry for a record kind, or undefined when it never expires. */
+  private expiresAt(kind: "record" | "quarantine"): number | undefined {
+    const days = kind === "quarantine" ? this.ttl.quarantineTtlDays : this.ttl.recordTtlDays;
+    if (days === undefined || days <= 0) {
+      return undefined;
+    }
+    return Math.floor(this.now() / 1000) + Math.round(days * SECONDS_PER_DAY);
   }
 
   async putQuarantine(record: QuarantineRecord): Promise<void> {
@@ -135,6 +196,7 @@ export class DynamoRecoveryStore implements RecoveryStore {
       sourceQueue: record.sourceQueue,
       recoveryId: record.recoveryId,
       quarantinedAt: record.quarantinedAt,
+      [LEDGER_TTL_ATTRIBUTE]: this.expiresAt("quarantine"),
     });
   }
 
@@ -164,6 +226,7 @@ export class DynamoRecoveryStore implements RecoveryStore {
       suppressedCount: job.suppressedCount,
       failureCount: job.failureCount,
       stopReason: job.stopReason,
+      [LEDGER_TTL_ATTRIBUTE]: this.expiresAt("record"),
     });
   }
 
@@ -194,6 +257,7 @@ export class DynamoRecoveryStore implements RecoveryStore {
       replayResult: record.replayResult,
       reason: record.reason,
       createdAt: record.createdAt,
+      [LEDGER_TTL_ATTRIBUTE]: this.expiresAt("record"),
     });
   }
 

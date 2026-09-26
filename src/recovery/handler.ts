@@ -30,6 +30,7 @@ import {
   createRecoveryId,
   createStartedRecoveryJob,
   RecoveryJobStatus,
+  RecoveryReplayTargetKind,
   resolveRecoveryKnobs,
   stopRecoveryJob,
   type RecoveryStartEvent,
@@ -74,8 +75,8 @@ interface DecisionCounts {
 }
 
 export function createRecoveryHandler(deps: RecoveryHandlerDeps) {
-  return withDurableExecution<RecoveryStartEvent, RecoveryStartResult>(
-    async (event, context) => runRecovery(event ?? {}, context, deps),
+  return withDurableExecution<RecoveryStartEvent, RecoveryStartResult>(async (event, context) =>
+    runRecovery(event ?? {}, context, deps),
   );
 }
 
@@ -322,7 +323,10 @@ function metricsFrom(
   });
 }
 
-function logDecision(log: (record: RecoveryLogRecord) => void, record: RecoveryMessageRecord): void {
+function logDecision(
+  log: (record: RecoveryLogRecord) => void,
+  record: RecoveryMessageRecord,
+): void {
   const base = {
     recoveryId: record.recoveryId,
     messageId: record.messageId,
@@ -384,15 +388,15 @@ function resolveReplayTarget(
   sqs: SQSClient,
   queueUrl: string,
 ): ReplayTarget {
-  const kind = (event.replayTarget ?? process.env.RECOVERY_REPLAY_TARGET ?? "sqs").toLowerCase();
-  if (kind === "sns") {
+  const kind = parseReplayTargetKind(event.replayTarget ?? process.env.RECOVERY_REPLAY_TARGET);
+  if (kind === RecoveryReplayTargetKind.Sns) {
     const topicArn = event.snsTopicArn ?? process.env.RECOVERY_SNS_TOPIC_ARN;
     if (!topicArn) {
       throw new Error("snsTopicArn is required when replayTarget is sns");
     }
     return new SnsReplayTarget(new SNSClient({}), topicArn);
   }
-  if (kind === "eventbridge") {
+  if (kind === RecoveryReplayTargetKind.EventBridge) {
     const eventBusName = event.eventBusName ?? process.env.RECOVERY_EVENT_BUS_NAME;
     if (!eventBusName) {
       throw new Error("eventBusName is required when replayTarget is eventbridge");
@@ -404,4 +408,16 @@ function resolveReplayTarget(
     });
   }
   return new SqsReplayTarget(sqs, queueUrl);
+}
+
+function parseReplayTargetKind(value: string | undefined): RecoveryReplayTargetKind {
+  switch (value?.toLowerCase()) {
+    case RecoveryReplayTargetKind.Sns:
+      return RecoveryReplayTargetKind.Sns;
+    case RecoveryReplayTargetKind.EventBridge:
+      return RecoveryReplayTargetKind.EventBridge;
+    case RecoveryReplayTargetKind.Sqs:
+    default:
+      return RecoveryReplayTargetKind.Sqs;
+  }
 }

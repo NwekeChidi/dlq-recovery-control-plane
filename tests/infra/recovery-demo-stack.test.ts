@@ -79,7 +79,10 @@ describe("RecoveryDemoStack", () => {
       Targets: Match.arrayWith([
         Match.objectLike({
           DeadLetterConfig: { Arn: Match.anyValue() },
-          RetryPolicy: Match.objectLike({ MaximumRetryAttempts: 2 }),
+          RetryPolicy: Match.objectLike({
+            MaximumRetryAttempts: 2,
+            MaximumEventAgeInSeconds: 900,
+          }),
         }),
       ]),
     });
@@ -161,6 +164,15 @@ describe("RecoveryDemoStack", () => {
           KeyType: "HASH",
         },
       ],
+    });
+  });
+
+  test("enables DynamoDB TTL on the expiresAt attribute", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TimeToLiveSpecification: {
+        AttributeName: "expiresAt",
+        Enabled: true,
+      },
     });
   });
 });

@@ -53,6 +53,12 @@ export async function processShipment(
   const claim = await ledger.claimShipment(shipment.shipmentId);
 
   if (claim.outcome === ClaimOutcome.AlreadyCompleted) {
+    // The initial path must keep failing after the side effect is recorded.
+    // Otherwise SQS treats the retry as success and SHP-004 never reaches the DLQ.
+    // An authorized recovery replay still returns without a second dispatch.
+    if (options.recoveryId === undefined && isPostDispatchFailure(shipment)) {
+      throw new PostDispatchFailure();
+    }
     return shipment;
   }
 
@@ -63,11 +69,17 @@ export async function processShipment(
   options.onDispatch?.(shipment);
   await ledger.completeShipment(shipment.shipmentId, "dispatched");
 
-  if (shipment.shipmentId === "SHP-004" || shipment.scenario === FailureCode.PostDispatchFailure) {
+  if (isPostDispatchFailure(shipment)) {
     throw new PostDispatchFailure();
   }
 
   return shipment;
+}
+
+function isPostDispatchFailure(shipment: ShipmentV2): boolean {
+  return (
+    shipment.shipmentId === "SHP-004" || shipment.scenario === FailureCode.PostDispatchFailure
+  );
 }
 
 function parseShipmentV2(payload: unknown): ShipmentV2 {

@@ -1,7 +1,11 @@
 import { DEMO_SHIPMENTS } from "../fixtures/shipments";
 import { EXPECTED_DLQ_DEPTH } from "../shared/demo";
 import { shipmentIdOf, waitUntil } from "../shared/demo-status";
-import { DownstreamStatus, RecoveryJobStatus } from "../shared/recovery";
+import {
+  DownstreamStatus,
+  RecoveryJobStatus,
+  RecoveryReplayTargetKind,
+} from "../shared/recovery";
 import {
   getQueueDepth,
   invokeDemoRecovery,
@@ -51,7 +55,7 @@ export async function seedEventBridgeDemo(): Promise<{ shipmentId: string; event
   return seedEventBridgeShipments();
 }
 
-export async function waitForSeededEventDlq(timeoutMs = 120_000): Promise<boolean> {
+export async function waitForSeededEventDlq(timeoutMs = 360_000): Promise<boolean> {
   const eventDlqUrl = await resolveEventDlqUrl();
   return waitUntil(
     async () => {
@@ -63,7 +67,7 @@ export async function waitForSeededEventDlq(timeoutMs = 120_000): Promise<boolea
 }
 
 export async function startEventBridgeRecovery(): Promise<string> {
-  return invokeDemoRecovery({ path: "eventbridge" });
+  return invokeDemoRecovery({ path: RecoveryReplayTargetKind.EventBridge });
 }
 
 export async function seedSnsDemo(): Promise<{ shipmentId: string; messageId: string }[]> {
@@ -82,7 +86,7 @@ export async function waitForSeededSnsDlq(timeoutMs = 120_000): Promise<boolean>
 }
 
 export async function startSnsRecovery(): Promise<string> {
-  return invokeDemoRecovery({ path: "sns" });
+  return invokeDemoRecovery({ path: RecoveryReplayTargetKind.Sns });
 }
 
 export async function seedDemoShipments(): Promise<{ messageId: string; shipmentId: string }[]> {

@@ -30,6 +30,7 @@ import {
   DEMO_RECOVERY_BATCH_SIZE,
   DEMO_RECOVERY_MAX_FAILURE_RATE,
   DEMO_RECOVERY_REPLAY_DELAY_SECONDS,
+  RecoveryReplayTargetKind,
   createRecoveryId,
   type RecoveryStartEvent,
 } from "../shared/recovery";
@@ -193,11 +194,9 @@ export async function getQueueDepth(queueUrl: string): Promise<QueueDepth> {
   };
 }
 
-export type RecoveryPath = "sqs" | "eventbridge" | "sns";
-
 export interface RecoveryInvokeOptions {
   /** Which failure path to recover. Defaults to the SQS-triggered Lambda path. */
-  path?: RecoveryPath;
+  path?: RecoveryReplayTargetKind;
 }
 
 export async function invokeDemoRecovery(options: RecoveryInvokeOptions = {}): Promise<string> {
@@ -210,15 +209,15 @@ export async function invokeDemoRecovery(options: RecoveryInvokeOptions = {}): P
     replayDelaySeconds: DEMO_RECOVERY_REPLAY_DELAY_SECONDS,
   };
 
-  if (options.path === "eventbridge") {
+  if (options.path === RecoveryReplayTargetKind.EventBridge) {
     // Drain the EventBridge target DLQ and replay back onto the bus.
     event.dlqUrl = await resolveEventDlqUrl();
-    event.replayTarget = "eventbridge";
+    event.replayTarget = RecoveryReplayTargetKind.EventBridge;
     event.eventBusName = await resolveEventBusName();
-  } else if (options.path === "sns") {
+  } else if (options.path === RecoveryReplayTargetKind.Sns) {
     // Drain the SNS subscription DLQ and republish onto the topic.
     event.dlqUrl = await resolveSnsDlqUrl();
-    event.replayTarget = "sns";
+    event.replayTarget = RecoveryReplayTargetKind.Sns;
     event.snsTopicArn = await resolveSnsTopicArn();
   }
 

@@ -60,6 +60,9 @@ export class RecoveryDemoStack extends Stack {
       partitionKey: { name: "pk", type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
+      // Job + per-message records carry an `expiresAt` (epoch seconds) and are
+      // reaped by DynamoDB TTL; quarantined originals opt out by omitting it.
+      timeToLiveAttribute: "expiresAt",
     });
 
     this.shipmentProcessor = new NodejsFunction(this, "ShipmentProcessor", {
@@ -159,7 +162,10 @@ export class RecoveryDemoStack extends Stack {
         new LambdaFunction(this.eventBridgeProcessor, {
           deadLetterQueue: this.shipmentEventsDlq,
           retryAttempts: 2,
-          maxEventAge: Duration.seconds(60),
+          // Backoff for two retries runs about three minutes. A 60s max age
+          // expires the event first, and EventBridge then drops it instead of
+          // writing the target DLQ.
+          maxEventAge: Duration.minutes(15),
         }),
       ],
     });

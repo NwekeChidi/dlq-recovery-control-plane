@@ -97,6 +97,16 @@ describe("processShipment", () => {
         ledger,
         onDispatch: (shipment) => dispatched.push(shipment.shipmentId),
       }),
+    ).rejects.toBeInstanceOf(PostDispatchFailure);
+
+    expect(dispatched).toEqual(["SHP-004"]);
+
+    await expect(
+      processShipment(shp004AlreadyDispatched, {
+        recoveryId: "REC-42",
+        ledger,
+        onDispatch: (shipment) => dispatched.push(shipment.shipmentId),
+      }),
     ).resolves.toMatchObject({ shipmentId: "SHP-004" });
 
     expect(dispatched).toEqual(["SHP-004"]);

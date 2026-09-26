@@ -113,7 +113,11 @@ export function createStartedRecoveryJob(input: {
   };
 }
 
-export type RecoveryReplayTargetKind = "sqs" | "sns" | "eventbridge";
+export enum RecoveryReplayTargetKind {
+  Sqs = "sqs",
+  Sns = "sns",
+  EventBridge = "eventbridge",
+}
 
 export interface RecoveryStartEvent {
   recoveryId?: string;
