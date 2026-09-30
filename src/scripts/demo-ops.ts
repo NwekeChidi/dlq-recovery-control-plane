@@ -55,7 +55,7 @@ export async function seedEventBridgeDemo(): Promise<{ shipmentId: string; event
   return seedEventBridgeShipments();
 }
 
-export async function waitForSeededEventDlq(timeoutMs = 360_000): Promise<boolean> {
+export async function waitForSeededEventDlq(timeoutMs = 90_000): Promise<boolean> {
   const eventDlqUrl = await resolveEventDlqUrl();
   return waitUntil(
     async () => {

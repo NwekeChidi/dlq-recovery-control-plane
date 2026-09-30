@@ -1,4 +1,5 @@
 import type { EventBridgeEvent, Handler } from "aws-lambda";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { shipmentIdOf } from "../shared/demo-status";
 import { RECOVERY_DETAIL_KEY } from "../shared/demo";
 import { RecoveryLogEvent, writeRecoveryLog } from "../shared/observability";
@@ -12,6 +13,28 @@ import { DynamoShipmentLedger, type ShipmentLedger } from "../shared/shipments-r
 import { isRecord } from "../shared/shipment";
 import { processShipment } from "./process-shipment";
 
+/** Queue the processor writes when an initial EventBridge delivery fails processing. */
+export const EVENT_BRIDGE_DLQ_URL_ENV = "SHIPMENT_EVENTS_DLQ_URL";
+
+/**
+ * Sends one EventBridge event body to the events DLQ. Tests replace this so the
+ * handler does not call SQS. A thrown sender fails the invocation.
+ */
+export const eventBridgeDelivery = {
+  deadLetter: async (body: string): Promise<void> => {
+    const queueUrl = process.env[EVENT_BRIDGE_DLQ_URL_ENV];
+    if (!queueUrl) {
+      throw new Error(`${EVENT_BRIDGE_DLQ_URL_ENV} is not set`);
+    }
+    await new SQSClient({}).send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: body,
+      }),
+    );
+  },
+};
+
 interface RecoveryProvenance {
   recoveryId?: string;
   originalMessageId?: string;
@@ -20,9 +43,13 @@ interface RecoveryProvenance {
 /**
  * EventBridge target for the shipment failure path. A fresh event carries the
  * bare shipment in `detail`; a recovery replay carries the shipment plus a
- * `__recovery` block. Failures throw so EventBridge retries and then redrives to
- * the target's SQS dead-letter queue, where the durable recovery job picks them
- * up — exactly like the SQS-triggered path.
+ * `__recovery` block.
+ *
+ * EventBridge invokes Lambda asynchronously and treats the handoff as success,
+ * so a thrown handler never reaches the rule target's DLQ. An initial failure
+ * is written once, as the EventBridge event, to ShipmentEventsDLQ, and the
+ * invocation returns so Lambda does not retry it. A recovery replay still
+ * throws: that failure belongs to the job already draining the queue.
  */
 export const handler: Handler<EventBridgeEvent<string, unknown>, void> = async (
   event,
@@ -47,7 +74,10 @@ export const handler: Handler<EventBridgeEvent<string, unknown>, void> = async (
   } catch (error) {
     await recordReplayResult(recovery, recoveryId, originalMessageId, ReplayResult.Failed);
     logReplayResult(recoveryId, originalMessageId, payload, ReplayResult.Failed);
-    throw error;
+    if (recoveryId !== undefined) {
+      throw error;
+    }
+    await eventBridgeDelivery.deadLetter(JSON.stringify(event));
   }
 };
 

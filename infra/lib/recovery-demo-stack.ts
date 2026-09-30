@@ -124,9 +124,10 @@ export class RecoveryDemoStack extends Stack {
     });
 
     // EventBridge failure path: a rule delivers shipment events to a Lambda
-    // target; failed deliveries redrive to an SQS DLQ, and the same durable
-    // recovery job (invoked with replayTarget=eventbridge) replays them back
-    // onto the bus.
+    // target. EventBridge invokes Lambda asynchronously and does not write a
+    // thrown handler to the target DLQ, so the processor writes the failed
+    // event itself onto ShipmentEventsDLQ. Recovery (replayTarget=eventbridge)
+    // drains that queue and puts the events back on the bus.
     this.shipmentEventBus = new EventBus(this, "ShipmentEventBus");
 
     this.shipmentEventsDlq = new Queue(this, "ShipmentEventsDLQ", {
@@ -142,6 +143,7 @@ export class RecoveryDemoStack extends Stack {
       memorySize: 256,
       environment: {
         DEMO_LEDGER_TABLE_NAME: this.demoLedger.tableName,
+        SHIPMENT_EVENTS_DLQ_URL: this.shipmentEventsDlq.queueUrl,
       },
       bundling: {
         minify: true,
@@ -151,6 +153,7 @@ export class RecoveryDemoStack extends Stack {
     });
 
     this.demoLedger.grantReadWriteData(this.eventBridgeProcessor);
+    this.shipmentEventsDlq.grantSendMessages(this.eventBridgeProcessor);
 
     new Rule(this, "ShipmentEventsRule", {
       eventBus: this.shipmentEventBus,
@@ -162,9 +165,6 @@ export class RecoveryDemoStack extends Stack {
         new LambdaFunction(this.eventBridgeProcessor, {
           deadLetterQueue: this.shipmentEventsDlq,
           retryAttempts: 2,
-          // Backoff for two retries runs about three minutes. A 60s max age
-          // expires the event first, and EventBridge then drops it instead of
-          // writing the target DLQ.
           maxEventAge: Duration.minutes(15),
         }),
       ],

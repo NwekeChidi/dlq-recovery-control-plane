@@ -8,8 +8,8 @@ import { isRecord } from "../shared/shipment";
  *   - SQS-triggered Lambda: the DLQ body is the original message body.
  *   - SNS: a failed delivery redrives to an SQS DLQ as an SNS *notification*
  *     envelope; the original event is the stringified `Message` field.
- *   - EventBridge: a failed target invocation redrives to an SQS DLQ; the
- *     original event is the EventBridge event, whose payload is `detail`.
+ *   - EventBridge: the processor writes the failed event onto an SQS DLQ; the
+ *     original event is that EventBridge event, whose payload is `detail`.
  *
  * Triage, patch, validate, replay, and observe are source-agnostic: they only
  * ever see `originalEvent`. Only ingest (this file) and egress (replay-target)

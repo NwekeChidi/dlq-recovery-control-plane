@@ -35,7 +35,7 @@ async function main(): Promise<void> {
 
   if (!reached) {
     throw new Error(
-      `Timed out waiting for ShipmentEventsDLQ depth ${EXPECTED_DLQ_DEPTH}. EventBridge may still be retrying delivery.`,
+      `Timed out waiting for ShipmentEventsDLQ depth ${EXPECTED_DLQ_DEPTH}. The event processor writes failed deliveries there.`,
     );
   }
 }

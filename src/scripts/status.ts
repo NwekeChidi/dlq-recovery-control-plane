@@ -5,14 +5,21 @@ import {
   resolveDemoLedger,
   resolveDemoQueueUrls,
   resolveDemoRecoveryStore,
+  resolveEventDlqUrl,
+  resolveSnsDlqUrl,
 } from "./aws";
 
 async function main(): Promise<void> {
   const urls = await resolveDemoQueueUrls();
+  const [eventDlqUrl, snsDlqUrl] = await Promise.all([resolveEventDlqUrl(), resolveSnsDlqUrl()]);
   const ledger = await resolveDemoLedger();
   const recovery = await resolveDemoRecoveryStore();
-  const queue = await getQueueDepth(urls.queueUrl);
-  const dlq = await getQueueDepth(urls.dlqUrl);
+  const [queue, dlq, eventDlq, snsDlq] = await Promise.all([
+    getQueueDepth(urls.queueUrl),
+    getQueueDepth(urls.dlqUrl),
+    getQueueDepth(eventDlqUrl),
+    getQueueDepth(snsDlqUrl),
+  ]);
   const [shipments, quarantines, recoveryJobs, recoveryMessages, downstreamStatus] =
     await Promise.all([
       ledger.listShipmentStates(),
@@ -23,6 +30,10 @@ async function main(): Promise<void> {
     ]);
   console.log(
     formatDemoStatus(queue, dlq, shipments, {
+      extraQueues: [
+        { label: "ShipmentEventsDLQ", visible: eventDlq.visible },
+        { label: "ShipmentNotificationsDLQ", visible: snsDlq.visible },
+      ],
       quarantines,
       recoveryJobs,
       recoveryMessages,

@@ -49,7 +49,7 @@ Sends SHP-001 through SHP-004 and waits until the DLQ has 4 messages.
 npm run demo:status
 ```
 
-Projector-friendly queue, downstream, quarantine, and recovery summary. Use a large terminal font.
+Projector-friendly summary of `ShipmentsQueue`, `ShipmentsDLQ`, `ShipmentEventsDLQ`, `ShipmentNotificationsDLQ`, downstream, quarantine, and recovery. Use a large terminal font.
 
 ## Recover
 
@@ -109,12 +109,12 @@ Prints `PASS` or `FAIL`. The circuit-breaker run restores downstream even when t
 
 ## EventBridge and SNS failure paths
 
-Two more fully deployed failure paths prove the control plane is source-agnostic. Each delivers to a Lambda that can fail; failed deliveries redrive to an SQS dead-letter queue, and the **same** durable recovery job drains that DLQ and replays back onto the original transport. The four fixtures (SHP-001..004) exercise the same triage → patch → replay → quarantine → skip story through every transport.
+Two more fully deployed failure paths prove the control plane is source-agnostic. Each delivers to a Lambda that can fail. Neither EventBridge nor SNS writes a thrown handler onto its DLQ, so each processor writes the failed delivery itself. The **same** durable recovery job drains that DLQ and replays back onto the original transport. The four fixtures (SHP-001..004) exercise the same triage → patch → replay → quarantine → skip story through every transport.
 
-EventBridge — a bus delivers shipment events to a Lambda target; failures redrive to `ShipmentEventsDLQ`; recovery replays via `PutEvents`:
+EventBridge — a bus delivers shipment events to a Lambda target. The processor writes a failed event to `ShipmentEventsDLQ`. Recovery replays via `PutEvents`:
 
 ```bash
-npm run demo:seed:eb       # PutEvents SHP-001..004; target fails; wait until ShipmentEventsDLQ has 4
+npm run demo:seed:eb       # PutEvents SHP-001..004; processor dead-letters them; wait until ShipmentEventsDLQ has 4
 npm run demo:status:eb     # bus name + ShipmentEventsDLQ depth + ledger + recovery projection
 npm run recovery:start:eb  # recover the EventBridge path (replayTarget=eventbridge, replays onto the bus)
 npm run demo:status:eb     # after (~15s); expect the DLQ drained and Status COMPLETED

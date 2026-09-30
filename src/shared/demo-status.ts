@@ -17,6 +17,8 @@ export function queuesAreDirty(queue: QueueDepth, dlq: QueueDepth): boolean {
 }
 
 export interface DemoStatusExtras {
+  /** Other queues to print after the primary DLQ, visible depth only. */
+  extraQueues?: Array<{ label: string; visible: number }>;
   downstreamStatus?: DownstreamStatus;
   quarantines?: Array<{
     messageId: string;
@@ -46,7 +48,7 @@ export interface DemoStatusExtras {
   }>;
 }
 
-const LABEL_WIDTH = 18;
+const LABEL_WIDTH = 28;
 
 export interface DemoStatusLabels {
   /** Header line for the source depth. Set to null to omit it (e.g. a push source). */
@@ -66,6 +68,9 @@ export function formatDemoStatus(
     lines.push(labeled(labels.queue ?? "ShipmentsQueue", formatQueueValue(queue)));
   }
   lines.push(labeled(labels.dlq ?? "ShipmentsDLQ", dlq.visible));
+  for (const extra of extras.extraQueues ?? []) {
+    lines.push(labeled(extra.label, extra.visible));
+  }
 
   if (extras.downstreamStatus !== undefined) {
     lines.push(labeled("Downstream", extras.downstreamStatus));

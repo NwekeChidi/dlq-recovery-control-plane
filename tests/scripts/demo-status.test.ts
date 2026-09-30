@@ -131,6 +131,29 @@ describe("demo status helpers", () => {
     ).toContain(labeled("Stop reason", "Replay failure rate 1 exceeded maxFailureRate 0.25"));
   });
 
+  test("prints extra queue depths after the primary DLQ", () => {
+    expect(
+      formatDemoStatus(
+        { visible: 0, inFlight: 0 },
+        { visible: 1, inFlight: 0 },
+        [],
+        {
+          extraQueues: [
+            { label: "ShipmentEventsDLQ", visible: 4 },
+            { label: "ShipmentNotificationsDLQ", visible: 2 },
+          ],
+        },
+      ),
+    ).toBe(
+      [
+        labeled("ShipmentsQueue", 0),
+        labeled("ShipmentsDLQ", 1),
+        labeled("ShipmentEventsDLQ", 4),
+        labeled("ShipmentNotificationsDLQ", 2),
+      ].join("\n"),
+    );
+  });
+
   test("warns when either queue still has work", () => {
     expect(queuesAreDirty({ visible: 0, inFlight: 0 }, { visible: 0, inFlight: 0 })).toBe(false);
     expect(queuesAreDirty({ visible: 1, inFlight: 0 }, { visible: 0, inFlight: 0 })).toBe(true);

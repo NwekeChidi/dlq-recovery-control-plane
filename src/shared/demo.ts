@@ -7,9 +7,9 @@ export const RECOVERY_LIVE_ALIAS = "live";
 export const EXPECTED_DLQ_DEPTH = 4;
 
 // EventBridge failure path (same four-class story, different transport).
-// A rule delivers shipment events to a Lambda target; failed deliveries land on
-// an SQS dead-letter queue, and the same durable recovery job replays them back
-// onto the bus.
+// A rule delivers shipment events to a Lambda target. The processor writes a
+// failed initial delivery, as the EventBridge event, onto an SQS dead-letter
+// queue, and the same durable recovery job replays them back onto the bus.
 export const EVENT_BUS_NAME_OUTPUT = "ShipmentEventBusName";
 export const EVENT_DLQ_URL_OUTPUT = "ShipmentEventsDlqUrl";
 

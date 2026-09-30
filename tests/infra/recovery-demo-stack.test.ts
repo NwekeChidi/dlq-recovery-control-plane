@@ -62,12 +62,19 @@ describe("RecoveryDemoStack", () => {
     template.hasOutput("RecoveryLiveAliasArn", {});
   });
 
-  test("wires an EventBridge failure path: bus, rule, target DLQ, and outputs", () => {
+  test("wires an EventBridge failure path: bus, rule, processor DLQ write, and outputs", () => {
     template.resourceCountIs("AWS::Events::EventBus", 1);
     template.hasResourceProperties("AWS::Events::Rule", {
       EventPattern: {
         source: ["fulfilment.shipments", "taming-dlqs.recovery"],
         "detail-type": ["ShipmentRequested", "ShipmentRecoveryReplay"],
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          SHIPMENT_EVENTS_DLQ_URL: Match.anyValue(),
+        }),
       },
     });
     template.hasOutput("ShipmentEventBusName", {});
