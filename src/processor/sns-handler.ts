@@ -1,4 +1,5 @@
-import type { SNSHandler } from "aws-lambda";
+import type { SNSEventRecord, SNSHandler } from "aws-lambda";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { shipmentIdOf } from "../shared/demo-status";
 import { InvalidShipmentError } from "../shared/errors";
 import { RecoveryLogEvent, writeRecoveryLog } from "../shared/observability";
@@ -11,13 +12,38 @@ import { DynamoRecoveryStore } from "../shared/recovery-repo";
 import { DynamoShipmentLedger, type ShipmentLedger } from "../shared/shipments-repo";
 import { processShipment } from "./process-shipment";
 
+/** Queue the processor writes when an initial SNS delivery fails processing. */
+export const SNS_NOTIFICATIONS_DLQ_URL_ENV = "SHIPMENT_NOTIFICATIONS_DLQ_URL";
+
+/**
+ * Sends one SNS Notification body to the notifications DLQ. Tests replace this
+ * so the handler does not call SQS. A thrown sender fails the invocation.
+ */
+export const snsDelivery = {
+  deadLetter: async (body: string): Promise<void> => {
+    const queueUrl = process.env[SNS_NOTIFICATIONS_DLQ_URL_ENV];
+    if (!queueUrl) {
+      throw new Error(`${SNS_NOTIFICATIONS_DLQ_URL_ENV} is not set`);
+    }
+    await new SQSClient({}).send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: body,
+      }),
+    );
+  },
+};
+
 /**
  * SNS subscription target for the shipment failure path. A fresh publish carries
  * the shipment as the SNS `Message`; a recovery replay carries the same message
- * plus recovery provenance as SNS message attributes (SNS, unlike EventBridge,
- * has per-message attributes — so this reads just like the SQS handler).
- * Failures throw so SNS retries and then redrives to the subscription's SQS
- * dead-letter queue, where the durable recovery job picks them up.
+ * plus recovery provenance as SNS message attributes.
+ *
+ * SNS invokes Lambda asynchronously and does not redrive a thrown handler to the
+ * subscription DLQ. An initial failure is written once, as an SNS Notification,
+ * to ShipmentNotificationsDLQ, and the invocation returns so Lambda does not
+ * retry it. A recovery replay still throws: that failure belongs to the job
+ * already draining the queue, and copying it back would duplicate the message.
  */
 export const handler: SNSHandler = async (event): Promise<void> => {
   const ledger = ledgerFromEnv();
@@ -43,10 +69,25 @@ export const handler: SNSHandler = async (event): Promise<void> => {
     } catch (error) {
       await recordReplayResult(recovery, recoveryId, originalMessageId, ReplayResult.Failed);
       logReplayResult(recoveryId, originalMessageId, payload, ReplayResult.Failed);
-      throw error;
+      if (recoveryId !== undefined) {
+        throw error;
+      }
+      await snsDelivery.deadLetter(notificationEnvelope(record));
     }
   }
 };
+
+/** Body shape `parseSourceEnvelope` recognizes as an SNS notification. */
+export function notificationEnvelope(record: SNSEventRecord): string {
+  return JSON.stringify({
+    Type: "Notification",
+    MessageId: record.Sns.MessageId,
+    TopicArn: record.Sns.TopicArn,
+    Subject: record.Sns.Subject,
+    Message: record.Sns.Message,
+    Timestamp: record.Sns.Timestamp,
+  });
+}
 
 function logReplayResult(
   recoveryId: string | undefined,

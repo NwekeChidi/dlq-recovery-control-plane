@@ -122,10 +122,10 @@ npm run demo:smoke:eb                       # end-to-end reset → seed → reco
 npm run demo:smoke:eb -- --circuit-breaker  # STOP path
 ```
 
-SNS — a topic fans out to a Lambda subscription; failures redrive to `ShipmentNotificationsDLQ`; recovery republishes via `Publish` (provenance rides as message attributes):
+SNS — a topic fans out to a Lambda subscription. The processor writes a failed initial delivery, as an SNS notification, to `ShipmentNotificationsDLQ`. Recovery republishes via `Publish` (provenance rides as message attributes):
 
 ```bash
-npm run demo:seed:sns       # Publish SHP-001..004; subscription fails; wait until ShipmentNotificationsDLQ has 4
+npm run demo:seed:sns       # Publish SHP-001..004; processor dead-letters them; wait until ShipmentNotificationsDLQ has 4
 npm run demo:status:sns     # topic ARN + ShipmentNotificationsDLQ depth + ledger + recovery projection
 npm run recovery:start:sns  # recover the SNS path (replayTarget=sns, republishes onto the topic)
 npm run demo:status:sns     # after (~15s); expect the DLQ drained and Status COMPLETED

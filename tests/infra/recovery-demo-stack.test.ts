@@ -101,11 +101,18 @@ describe("RecoveryDemoStack", () => {
     });
   });
 
-  test("wires an SNS failure path: topic, Lambda subscription with DLQ, and outputs", () => {
+  test("wires an SNS failure path: topic, Lambda subscription, processor DLQ write, and outputs", () => {
     template.resourceCountIs("AWS::SNS::Topic", 1);
     template.hasResourceProperties("AWS::SNS::Subscription", {
       Protocol: "lambda",
       RedrivePolicy: Match.anyValue(),
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          SHIPMENT_NOTIFICATIONS_DLQ_URL: Match.anyValue(),
+        }),
+      },
     });
     template.hasOutput("ShipmentTopicArn", {});
     template.hasOutput("ShipmentNotificationsDlqUrl", {});

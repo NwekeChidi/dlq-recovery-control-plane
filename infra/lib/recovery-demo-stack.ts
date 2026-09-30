@@ -174,9 +174,11 @@ export class RecoveryDemoStack extends Stack {
     this.shipmentEventsDlq.grantConsumeMessages(this.recoveryFunction);
     this.shipmentEventBus.grantPutEventsTo(this.recoveryFunction);
 
-    // SNS failure path: a topic fans out to a Lambda subscription; failed
-    // deliveries redrive to an SQS DLQ as an SNS Notification envelope, and the
-    // same durable recovery job (replayTarget=sns) republishes onto the topic.
+    // SNS failure path: a topic fans out to a Lambda subscription. SNS does not
+    // redrive a thrown handler to the subscription DLQ, so the processor writes
+    // the failed delivery itself, as an SNS Notification, onto
+    // ShipmentNotificationsDLQ. Recovery (replayTarget=sns) drains that queue
+    // and republishes onto the topic.
     this.shipmentTopic = new Topic(this, "ShipmentTopic");
 
     this.shipmentNotificationsDlq = new Queue(this, "ShipmentNotificationsDLQ", {
@@ -192,6 +194,7 @@ export class RecoveryDemoStack extends Stack {
       memorySize: 256,
       environment: {
         DEMO_LEDGER_TABLE_NAME: this.demoLedger.tableName,
+        SHIPMENT_NOTIFICATIONS_DLQ_URL: this.shipmentNotificationsDlq.queueUrl,
       },
       bundling: {
         minify: true,
@@ -201,6 +204,7 @@ export class RecoveryDemoStack extends Stack {
     });
 
     this.demoLedger.grantReadWriteData(this.snsProcessor);
+    this.shipmentNotificationsDlq.grantSendMessages(this.snsProcessor);
 
     this.shipmentTopic.addSubscription(
       new LambdaSubscription(this.snsProcessor, {

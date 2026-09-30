@@ -26,7 +26,7 @@
     "smoke:sqs": "ts-node --prefer-ts-exts src/scripts/smoke.ts",
     "smoke:eb": "ts-node --prefer-ts-exts src/scripts/smoke-eventbridge.ts",
     "smoke:sns": "ts-node --prefer-ts-exts src/scripts/smoke-sns.ts",
-    "recovery:start": "ts-node --prefer-ts-exts src/scripts/start-recovery.ts",
+    "recovery:start:sqs": "ts-node --prefer-ts-exts src/scripts/start-recovery.ts",
     "recovery:start:eb": "ts-node --prefer-ts-exts src/scripts/start-recovery-eventbridge.ts",
     "recovery:start:sns": "ts-node --prefer-ts-exts src/scripts/start-recovery-sns.ts",
     "slides:pptx": "node slides/build-pptx.mjs"

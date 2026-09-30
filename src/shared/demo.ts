@@ -13,9 +13,10 @@ export const EXPECTED_DLQ_DEPTH = 4;
 export const EVENT_BUS_NAME_OUTPUT = "ShipmentEventBusName";
 export const EVENT_DLQ_URL_OUTPUT = "ShipmentEventsDlqUrl";
 
-// SNS failure path. A topic fans out to a Lambda subscription; failed deliveries
-// redrive (subscription DLQ) to an SQS queue as an SNS Notification envelope, and
-// the same durable recovery job republishes them onto the topic. Unlike
+// SNS failure path. A topic fans out to a Lambda subscription. The processor
+// writes a failed initial delivery, as an SNS Notification, onto the SQS
+// notifications DLQ. The same durable recovery job republishes them onto the
+// topic. Unlike
 // EventBridge, SNS carries per-message attributes, so recovery provenance rides
 // as message attributes (like the SQS path).
 export const SNS_TOPIC_ARN_OUTPUT = "ShipmentTopicArn";
