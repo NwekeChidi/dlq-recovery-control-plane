@@ -7,8 +7,8 @@ describe("RecoveryDemoStack", () => {
     new RecoveryDemoStack(new cdk.App(), "TestStack"),
   );
 
-  test("creates the source queue, its DLQ, and the EventBridge + SNS target DLQs", () => {
-    template.resourceCountIs("AWS::SQS::Queue", 4);
+  test("creates the source queue, its DLQ, and the EventBridge, SNS, and stream DLQs", () => {
+    template.resourceCountIs("AWS::SQS::Queue", 5);
   });
 
   test("source queue redrives to the DLQ after two receives", () => {
@@ -138,8 +138,8 @@ describe("RecoveryDemoStack", () => {
     });
   });
 
-  test("creates a durable recovery function plus SQS, EventBridge, and SNS processors", () => {
-    template.resourceCountIs("AWS::Lambda::Function", 4);
+  test("creates a durable recovery function plus SQS, EventBridge, SNS, and stream processors", () => {
+    template.resourceCountIs("AWS::Lambda::Function", 5);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Runtime: "nodejs24.x",
       Architectures: ["arm64"],
@@ -179,6 +179,47 @@ describe("RecoveryDemoStack", () => {
         },
       ],
     });
+  });
+
+  test("wires a DynamoDB Streams failure path: shipment table, processor DLQ write, and outputs", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      StreamSpecification: {
+        StreamViewType: "NEW_IMAGE",
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      StartingPosition: "LATEST",
+      BatchSize: 1,
+      MaximumRetryAttempts: 2,
+      BisectBatchOnFunctionError: true,
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          SHIPMENT_STREAM_DLQ_URL: Match.anyValue(),
+        }),
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          SHIPMENT_STREAM_PROCESSOR_ARN: Match.anyValue(),
+        }),
+      },
+    });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "lambda:InvokeFunction",
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+    template.hasOutput("ShipmentRecordsTableName", {});
+    template.hasOutput("ShipmentStreamDlqUrl", {});
+    template.hasOutput("ShipmentStreamProcessorArn", {});
   });
 
   test("enables DynamoDB TTL on the expiresAt attribute", () => {

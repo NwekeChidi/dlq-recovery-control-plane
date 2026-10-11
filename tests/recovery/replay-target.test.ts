@@ -1,8 +1,11 @@
 import type { EventBridgeClient } from "@aws-sdk/client-eventbridge";
+import type { LambdaClient } from "@aws-sdk/client-lambda";
 import type { SNSClient } from "@aws-sdk/client-sns";
 import type { SQSClient } from "@aws-sdk/client-sqs";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { ReplayEnvelope } from "../../src/recovery/replay";
 import {
+  DynamoDbReplayTarget,
   EventBridgeReplayTarget,
   SnsReplayTarget,
   SqsReplayTarget,
@@ -96,5 +99,57 @@ describe("EventBridgeReplayTarget", () => {
     });
     const target = new EventBridgeReplayTarget(client);
     await expect(target.send(envelope)).rejects.toThrow("throttled");
+  });
+});
+
+describe("DynamoDbReplayTarget", () => {
+  test("invokes the stream processor with the saved item and provenance", async () => {
+    const { client, send } = fakeClient<LambdaClient>({
+      StatusCode: 200,
+      $metadata: { requestId: "req-1" },
+    });
+    const target = new DynamoDbReplayTarget(client, "arn:aws:lambda:us-west-2:123:function:stream");
+
+    const id = await target.send(envelope);
+
+    expect(target.kind).toBe(RecoverySourceType.DynamoDb);
+    expect(id).toBe("req-1");
+    const input = send.mock.calls[0][0].input;
+    expect(input.FunctionName).toBe("arn:aws:lambda:us-west-2:123:function:stream");
+    expect(input.InvocationType).toBe("RequestResponse");
+    const event = JSON.parse(Buffer.from(input.Payload).toString());
+    const item = unmarshall(event.Records[0].dynamodb.NewImage);
+    expect(item.shipmentId).toBe("SHP-002");
+    expect(item.pk).toBe("SHP-002");
+    expect(item.__recovery).toEqual({
+      recoveryId: "REC-1",
+      originalMessageId: "m-002",
+      replayAttempt: 1,
+      patchVersion: "shipment-v1-to-v2",
+    });
+  });
+
+  test("treats a processor function error as a completed handoff", async () => {
+    const { client } = fakeClient<LambdaClient>({
+      StatusCode: 200,
+      FunctionError: "Unhandled",
+      $metadata: { requestId: "req-2" },
+    });
+    const target = new DynamoDbReplayTarget(client, "arn:function");
+    await expect(target.send(envelope)).resolves.toBe("req-2");
+  });
+
+  test("throws when the invoke itself is rejected", async () => {
+    const { client } = fakeClient<LambdaClient>({ StatusCode: 500 });
+    const target = new DynamoDbReplayTarget(client, "arn:function");
+    await expect(target.send(envelope)).rejects.toThrow("status 500");
+  });
+
+  test("throws when the payload has no shipment id", async () => {
+    const { client } = fakeClient<LambdaClient>({ StatusCode: 200 });
+    const target = new DynamoDbReplayTarget(client, "arn:function");
+    await expect(
+      target.send({ ...envelope, body: { customerId: "CUS-002" } }),
+    ).rejects.toThrow("shipment id");
   });
 });

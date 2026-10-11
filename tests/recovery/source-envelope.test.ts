@@ -49,6 +49,21 @@ describe("parseSourceEnvelope", () => {
     });
   });
 
+  test("unwraps a DynamoDB stream failure and drops the key and provenance", () => {
+    const envelope = parseSourceEnvelope({
+      eventSource: "aws:dynamodb",
+      eventID: "ev-1",
+      eventName: "INSERT",
+      item: {
+        pk: "SHP-001",
+        ...original,
+        __recovery: { recoveryId: "REC-1", originalMessageId: "m-1" },
+      },
+    });
+    expect(envelope.sourceType).toBe(RecoverySourceType.DynamoDb);
+    expect(envelope.originalEvent).toEqual(original);
+  });
+
   test("falls back to SQS for an unparseable string body", () => {
     const envelope = parseSourceEnvelope("not-json");
     expect(envelope.sourceType).toBe(RecoverySourceType.Sqs);

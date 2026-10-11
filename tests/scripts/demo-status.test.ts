@@ -20,7 +20,7 @@ describe("demo status helpers", () => {
     ).toBe(
       [
         labeled("ShipmentsQueue", "0 (in-flight: 1)"),
-        labeled("ShipmentsDLQ", 4),
+        labeled("ShipmentsSqsDLQ", 4),
         "Dispatched:",
         "  SHP-004  COMPLETED",
       ].join("\n"),
@@ -86,7 +86,7 @@ describe("demo status helpers", () => {
     ).toBe(
       [
         labeled("ShipmentsQueue", 0),
-        labeled("ShipmentsDLQ", 0),
+        labeled("ShipmentsSqsDLQ", 0),
         labeled("Downstream", "healthy"),
         labeled("Quarantine", 1),
         "",
@@ -147,7 +147,7 @@ describe("demo status helpers", () => {
     ).toBe(
       [
         labeled("ShipmentsQueue", 0),
-        labeled("ShipmentsDLQ", 1),
+        labeled("ShipmentsSqsDLQ", 1),
         labeled("ShipmentEventsDLQ", 4),
         labeled("ShipmentNotificationsDLQ", 2),
       ].join("\n"),
