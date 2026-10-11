@@ -1,4 +1,4 @@
-import { formatDemoStatus } from "../shared/demo-status";
+import { formatDemoStatus, STREAM_DLQ_LABEL } from "../shared/demo-status";
 import {
   formatDemoAwsError,
   getQueueDepth,
@@ -6,6 +6,7 @@ import {
   resolveDemoRecoveryStore,
   resolveSnsDlqUrl,
   resolveSnsTopicArn,
+  streamDlqVisible,
 } from "./aws";
 
 async function main(): Promise<void> {
@@ -28,7 +29,13 @@ async function main(): Promise<void> {
       { visible: 0, inFlight: 0 },
       dlq,
       shipments,
-      { quarantines, recoveryJobs, recoveryMessages, downstreamStatus },
+      {
+        extraQueues: [{ label: STREAM_DLQ_LABEL, visible: await streamDlqVisible() }],
+        quarantines,
+        recoveryJobs,
+        recoveryMessages,
+        downstreamStatus,
+      },
       { queue: null, dlq: "ShipmentNotificationsDLQ" },
     ),
   );

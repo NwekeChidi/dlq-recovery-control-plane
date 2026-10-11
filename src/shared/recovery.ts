@@ -117,6 +117,7 @@ export enum RecoveryReplayTargetKind {
   Sqs = "sqs",
   Sns = "sns",
   EventBridge = "eventbridge",
+  DynamoDb = "dynamodb",
 }
 
 export interface RecoveryStartEvent {
@@ -132,6 +133,8 @@ export interface RecoveryStartEvent {
   eventBusName?: string;
   /** SNS topic ARN for replays when replayTarget is "sns". */
   snsTopicArn?: string;
+  /** Stream processor ARN for replays when replayTarget is "dynamodb". */
+  streamProcessorArn?: string;
 }
 
 export interface RecoveryKnobs {

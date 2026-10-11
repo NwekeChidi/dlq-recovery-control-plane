@@ -1,3 +1,5 @@
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { marshall } from "@aws-sdk/util-dynamodb";
 import {
   EventBridgeClient,
   PutEventsCommand,
@@ -15,13 +17,14 @@ import {
   RECOVERY_EVENT_DETAIL_TYPE,
   RECOVERY_EVENT_SOURCE,
 } from "../shared/demo";
+import { shipmentIdOf } from "../shared/demo-status";
 import { isRecord } from "../shared/shipment";
 
 /**
  * Where a validated, authorized replay is sent. The recovery loop only knows
  * about this interface, so the same triage/patch/replay/observe/stop control
  * plane works whether the original failure came from an SQS-triggered Lambda,
- * an SNS subscription, or an EventBridge rule.
+ * an SNS subscription, an EventBridge rule, or a DynamoDB stream.
  */
 export interface ReplayTarget {
   readonly kind: RecoverySourceType;
@@ -112,7 +115,72 @@ export class EventBridgeReplayTarget implements ReplayTarget {
   }
 }
 
-function withRecoveryProvenance(envelope: ReplayEnvelope): Record<string, unknown> {
+/**
+ * Hands the saved stream record to the stream processor. A stream cannot be
+ * republished to, and writing the item again would overwrite the current row,
+ * so the replay is a direct invoke. Provenance rides on the synthetic record
+ * under `__recovery`; the processor strips it before processing. The DynamoDB
+ * ledger stays the system of record.
+ *
+ * A processor that throws has already recorded the replay failure. That
+ * function error is not raised here, or the recovery step would invoke it again.
+ */
+export class DynamoDbReplayTarget implements ReplayTarget {
+  readonly kind = RecoverySourceType.DynamoDb;
+
+  constructor(
+    private readonly lambda: LambdaClient,
+    private readonly functionArn: string,
+  ) {}
+
+  async send(envelope: ReplayEnvelope): Promise<string> {
+    const item = isRecord(envelope.body) ? { ...envelope.body } : { value: envelope.body };
+    const shipmentId = shipmentIdOf(item);
+    if (shipmentId === "unknown") {
+      throw new Error("DynamoDB replay requires a shipment id");
+    }
+    const result = await this.lambda.send(
+      new InvokeCommand({
+        FunctionName: this.functionArn,
+        InvocationType: "RequestResponse",
+        Payload: Buffer.from(JSON.stringify(streamReplayEvent(item, shipmentId, envelope))),
+      }),
+    );
+    if (result.StatusCode && result.StatusCode >= 300) {
+      throw new Error(`DynamoDB replay invoke failed with status ${result.StatusCode}`);
+    }
+    return result.$metadata.requestId ?? shipmentId;
+  }
+}
+
+function streamReplayEvent(
+  item: Record<string, unknown>,
+  shipmentId: string,
+  envelope: ReplayEnvelope,
+): { Records: Array<Record<string, unknown>> } {
+  return {
+    Records: [
+      {
+        eventID: envelope.attributes.originalMessageId,
+        eventName: "INSERT",
+        eventVersion: "1.1",
+        eventSource: "aws:dynamodb",
+        dynamodb: {
+          NewImage: marshall(
+            {
+              ...item,
+              pk: shipmentId,
+              [RECOVERY_DETAIL_KEY]: recoveryProvenance(envelope),
+            },
+            { removeUndefinedValues: true },
+          ),
+        },
+      },
+    ],
+  };
+}
+
+function recoveryProvenance(envelope: ReplayEnvelope): Record<string, unknown> {
   const provenance: Record<string, unknown> = {
     recoveryId: envelope.attributes.recoveryId,
     originalMessageId: envelope.attributes.originalMessageId,
@@ -121,8 +189,12 @@ function withRecoveryProvenance(envelope: ReplayEnvelope): Record<string, unknow
   if (envelope.attributes.patchVersion) {
     provenance.patchVersion = envelope.attributes.patchVersion;
   }
+  return provenance;
+}
+
+function withRecoveryProvenance(envelope: ReplayEnvelope): Record<string, unknown> {
   const event = isRecord(envelope.body) ? envelope.body : { value: envelope.body };
-  return { ...event, [RECOVERY_DETAIL_KEY]: provenance };
+  return { ...event, [RECOVERY_DETAIL_KEY]: recoveryProvenance(envelope) };
 }
 
 function toSnsAttributes(envelope: ReplayEnvelope): Record<string, SnsMessageAttributeValue> {

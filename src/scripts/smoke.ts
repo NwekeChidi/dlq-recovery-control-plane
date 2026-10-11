@@ -5,7 +5,7 @@ import {
   formatTalkSummary,
   type SmokeSnapshot,
 } from "../shared/demo-smoke";
-import { formatDemoStatus } from "../shared/demo-status";
+import { formatDemoStatus, SQS_DLQ_LABEL, STREAM_DLQ_LABEL } from "../shared/demo-status";
 import { DownstreamStatus } from "../shared/recovery";
 import {
   formatDemoAwsError,
@@ -13,6 +13,7 @@ import {
   resolveDemoLedger,
   resolveDemoQueueUrls,
   resolveDemoRecoveryStore,
+  streamDlqVisible,
 } from "./aws";
 import {
   resetDemoEnvironment,
@@ -37,9 +38,9 @@ async function main(): Promise<void> {
 
   const reachedDlq = await waitForSeededDlq();
   if (!reachedDlq) {
-    throw new Error(`Timed out waiting for ShipmentsDLQ depth ${EXPECTED_DLQ_DEPTH}`);
+    throw new Error(`Timed out waiting for ${SQS_DLQ_LABEL} depth ${EXPECTED_DLQ_DEPTH}`);
   }
-  console.log(`ShipmentsDLQ reached ${EXPECTED_DLQ_DEPTH}`);
+  console.log(`${SQS_DLQ_LABEL} reached ${EXPECTED_DLQ_DEPTH}`);
 
   if (circuitBreaker) {
     await setDemoDownstream(DownstreamStatus.Broken);
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
     console.log("");
     console.log(
       formatDemoStatus(queue, dlq, shipments, {
+        extraQueues: [{ label: STREAM_DLQ_LABEL, visible: await streamDlqVisible() }],
         quarantines,
         recoveryJobs,
         recoveryMessages,

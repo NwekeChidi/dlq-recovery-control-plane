@@ -49,7 +49,7 @@ Sends SHP-001 through SHP-004 and waits until the DLQ has 4 messages.
 npm run demo:status
 ```
 
-Projector-friendly summary of `ShipmentsQueue`, `ShipmentsDLQ`, `ShipmentEventsDLQ`, `ShipmentNotificationsDLQ`, downstream, quarantine, and recovery. Use a large terminal font.
+Projector-friendly summary of `ShipmentsQueue`, `ShipmentsSqsDLQ`, `ShipmentEventsDLQ`, `ShipmentNotificationsDLQ`, `ShipmentStreamDLQ`, downstream, quarantine, and recovery. Use a large terminal font.
 
 ## Recover
 
@@ -107,9 +107,9 @@ npm run demo:smoke -- --circuit-breaker
 
 Prints `PASS` or `FAIL`. The circuit-breaker run restores downstream even when the assertion fails.
 
-## EventBridge and SNS failure paths
+## EventBridge, SNS, and DynamoDB Streams failure paths
 
-Two more fully deployed failure paths prove the control plane is source-agnostic. Each delivers to a Lambda that can fail. Neither EventBridge nor SNS writes a thrown handler onto its DLQ, so each processor writes the failed delivery itself. The **same** durable recovery job drains that DLQ and replays back onto the original transport. The four fixtures (SHP-001..004) exercise the same triage → patch → replay → quarantine → skip story through every transport.
+Three more fully deployed failure paths prove the control plane is source-agnostic. Each delivers to a Lambda that can fail. None of them has a redrive that preserves the business event, so each processor writes the failed delivery itself. The **same** durable recovery job drains that DLQ and replays back onto the original transport. The four fixtures (SHP-001..004) exercise the same triage → patch → replay → quarantine → skip story through every transport.
 
 EventBridge — a bus delivers shipment events to a Lambda target. The processor writes a failed event to `ShipmentEventsDLQ`. Recovery replays via `PutEvents`:
 
@@ -133,7 +133,18 @@ npm run demo:smoke:sns                       # end-to-end reset → seed → rec
 npm run demo:smoke:sns -- --circuit-breaker  # STOP path
 ```
 
-The recovery function chooses its DLQ and replay target per run from the start event, so one deployed durable function recovers the SQS, EventBridge, or SNS path. `demo:reset` purges the EventBridge and SNS DLQs too. Kinesis / DynamoDB Streams / Lambda async destinations use the same shape but stay conceptual.
+DynamoDB Streams — inserts on a shipment table stream to a Lambda. The processor writes a failed item to `ShipmentStreamDLQ`. Recovery invokes that processor with the saved item (provenance rides on the record as `__recovery`) and does not write the table again:
+
+```bash
+npm run seed:ddb              # PutItem SHP-001..004; processor dead-letters them; wait until ShipmentStreamDLQ has 4
+npm run status:ddb            # table name + ShipmentStreamDLQ depth + ledger + recovery projection
+npm run recovery:start:ddb    # recover the stream path (replayTarget=dynamodb)
+npm run status:ddb            # after (~15s); expect the DLQ drained and Status COMPLETED
+npm run smoke:ddb                       # end-to-end reset → seed → recover → assert
+npm run smoke:ddb -- --circuit-breaker  # STOP path
+```
+
+The recovery function chooses its DLQ and replay target per run from the start event, so one deployed durable function recovers the SQS, EventBridge, SNS, or DynamoDB Streams path. `npm run reset` purges those DLQs and clears the shipment table. Kinesis and Lambda async destinations use the same shape but stay conceptual.
 
 ## Destroy
 

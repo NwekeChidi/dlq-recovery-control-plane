@@ -1,4 +1,5 @@
 import { EventBridgeClient } from "@aws-sdk/client-eventbridge";
+import { LambdaClient } from "@aws-sdk/client-lambda";
 import { SNSClient } from "@aws-sdk/client-sns";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import type { DurableContext } from "@aws/durable-execution-sdk-js";
@@ -9,6 +10,7 @@ import { recordRecoveryDecision, triageLoadedMessage } from "./job";
 import { isTerminalHold } from "./quarantine";
 import { buildReplayEnvelope, replayOutcome, type ReplayEnvelope } from "./replay";
 import {
+  DynamoDbReplayTarget,
   EventBridgeReplayTarget,
   SnsReplayTarget,
   SqsReplayTarget,
@@ -379,9 +381,9 @@ function depsFromEnv(event: RecoveryStartEvent): RecoveryHandlerDeps {
 /**
  * Selects where authorized replays are published. The demo defaults to the SQS
  * source queue; a start event (or RECOVERY_REPLAY_TARGET env) can swap the
- * egress to SNS or EventBridge without touching the triage/patch/replay/
- * observe/stop control plane. The start event wins so one deployed function can
- * recover either the SQS or the EventBridge failure path.
+ * egress to SNS, EventBridge, or DynamoDB without touching the triage/patch/
+ * replay/observe/stop control plane. The start event wins so one deployed
+ * function can recover any of the failure paths.
  */
 function resolveReplayTarget(
   event: RecoveryStartEvent,
@@ -407,6 +409,13 @@ function resolveReplayTarget(
       detailType: process.env.RECOVERY_EVENT_DETAIL_TYPE,
     });
   }
+  if (kind === RecoveryReplayTargetKind.DynamoDb) {
+    const functionArn = event.streamProcessorArn ?? process.env.SHIPMENT_STREAM_PROCESSOR_ARN;
+    if (!functionArn) {
+      throw new Error("streamProcessorArn is required when replayTarget is dynamodb");
+    }
+    return new DynamoDbReplayTarget(new LambdaClient({}), functionArn);
+  }
   return new SqsReplayTarget(sqs, queueUrl);
 }
 
@@ -416,6 +425,8 @@ function parseReplayTargetKind(value: string | undefined): RecoveryReplayTargetK
       return RecoveryReplayTargetKind.Sns;
     case RecoveryReplayTargetKind.EventBridge:
       return RecoveryReplayTargetKind.EventBridge;
+    case RecoveryReplayTargetKind.DynamoDb:
+      return RecoveryReplayTargetKind.DynamoDb;
     case RecoveryReplayTargetKind.Sqs:
     default:
       return RecoveryReplayTargetKind.Sqs;

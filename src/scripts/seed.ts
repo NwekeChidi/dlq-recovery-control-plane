@@ -1,6 +1,6 @@
 import { EXPECTED_DLQ_DEPTH } from "../shared/demo";
-import { formatDemoStatus, queuesAreDirty } from "../shared/demo-status";
-import { formatDemoAwsError, getQueueDepth, resolveDemoQueueUrls } from "./aws";
+import { formatDemoStatus, queuesAreDirty, SQS_DLQ_LABEL, STREAM_DLQ_LABEL } from "../shared/demo-status";
+import { formatDemoAwsError, getQueueDepth, resolveDemoQueueUrls, streamDlqVisible } from "./aws";
 import { seedDemoShipments, waitForSeededDlq } from "./demo-ops";
 
 async function main(): Promise<void> {
@@ -26,11 +26,15 @@ async function main(): Promise<void> {
   const queue = await getQueueDepth(urls.queueUrl);
   const dlq = await getQueueDepth(urls.dlqUrl);
   console.log("");
-  console.log(formatDemoStatus(queue, dlq));
+  console.log(
+    formatDemoStatus(queue, dlq, [], {
+      extraQueues: [{ label: STREAM_DLQ_LABEL, visible: await streamDlqVisible() }],
+    }),
+  );
 
   if (!reached) {
     throw new Error(
-      `Timed out waiting for ShipmentsDLQ depth ${EXPECTED_DLQ_DEPTH}. Processor may still be retrying.`,
+      `Timed out waiting for ${SQS_DLQ_LABEL} depth ${EXPECTED_DLQ_DEPTH}. Processor may still be retrying.`,
     );
   }
 }

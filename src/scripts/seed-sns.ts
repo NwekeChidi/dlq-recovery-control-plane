@@ -1,10 +1,11 @@
 import { EXPECTED_DLQ_DEPTH } from "../shared/demo";
-import { formatDemoStatus } from "../shared/demo-status";
+import { formatDemoStatus, STREAM_DLQ_LABEL } from "../shared/demo-status";
 import {
   formatDemoAwsError,
   getQueueDepth,
   resolveSnsDlqUrl,
   resolveSnsTopicArn,
+  streamDlqVisible,
 } from "./aws";
 import { seedSnsDemo, waitForSeededSnsDlq } from "./demo-ops";
 
@@ -27,7 +28,9 @@ async function main(): Promise<void> {
   const dlq = await getQueueDepth(snsDlqUrl);
   console.log("");
   console.log(
-    formatDemoStatus({ visible: 0, inFlight: 0 }, dlq, [], {}, {
+    formatDemoStatus({ visible: 0, inFlight: 0 }, dlq, [], {
+      extraQueues: [{ label: STREAM_DLQ_LABEL, visible: await streamDlqVisible() }],
+    }, {
       queue: null,
       dlq: "ShipmentNotificationsDLQ",
     }),

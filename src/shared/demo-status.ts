@@ -50,6 +50,9 @@ export interface DemoStatusExtras {
 
 const LABEL_WIDTH = 28;
 
+export const SQS_DLQ_LABEL = "ShipmentsSqsDLQ";
+export const STREAM_DLQ_LABEL = "ShipmentStreamDLQ";
+
 export interface DemoStatusLabels {
   /** Header line for the source depth. Set to null to omit it (e.g. a push source). */
   queue?: string | null;
@@ -67,7 +70,7 @@ export function formatDemoStatus(
   if (labels.queue !== null) {
     lines.push(labeled(labels.queue ?? "ShipmentsQueue", formatQueueValue(queue)));
   }
-  lines.push(labeled(labels.dlq ?? "ShipmentsDLQ", dlq.visible));
+  lines.push(labeled(labels.dlq ?? SQS_DLQ_LABEL, dlq.visible));
   for (const extra of extras.extraQueues ?? []) {
     lines.push(labeled(extra.label, extra.visible));
   }

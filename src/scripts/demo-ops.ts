@@ -13,9 +13,12 @@ import {
   resolveDemoLedger,
   resolveDemoQueueUrls,
   resolveDemoRecoveryStore,
+  clearShipmentRecords,
   resolveEventDlqUrl,
   resolveSnsDlqUrl,
+  resolveStreamDlqUrl,
   seedEventBridgeShipments,
+  seedShipmentRecords,
   seedSnsShipments,
   sendJsonMessage,
   type DemoQueueUrls,
@@ -35,12 +38,18 @@ export async function resetDemoEnvironment(): Promise<DemoQueueUrls> {
 }
 
 /**
- * Best-effort purge of the EventBridge and SNS DLQs so the SQS demo reset does
- * not fail on stacks deployed before those paths existed.
+ * Best-effort purge of the other path DLQs, and a clear of the shipment table,
+ * so the SQS demo reset does not fail on stacks deployed before those paths existed.
  */
 async function purgeAlternatePathDlqs(): Promise<void> {
   await purgeBestEffort(resolveEventDlqUrl);
   await purgeBestEffort(resolveSnsDlqUrl);
+  await purgeBestEffort(resolveStreamDlqUrl);
+  try {
+    await clearShipmentRecords();
+  } catch {
+    // Stream path not deployed yet; nothing to clear.
+  }
 }
 
 async function purgeBestEffort(resolveUrl: () => Promise<string>): Promise<void> {
@@ -87,6 +96,25 @@ export async function waitForSeededSnsDlq(timeoutMs = 120_000): Promise<boolean>
 
 export async function startSnsRecovery(): Promise<string> {
   return invokeDemoRecovery({ path: RecoveryReplayTargetKind.Sns });
+}
+
+export async function seedStreamDemo(): Promise<{ shipmentId: string }[]> {
+  return seedShipmentRecords();
+}
+
+export async function waitForSeededStreamDlq(timeoutMs = 90_000): Promise<boolean> {
+  const streamDlqUrl = await resolveStreamDlqUrl();
+  return waitUntil(
+    async () => {
+      const dlq = await getQueueDepth(streamDlqUrl);
+      return dlq.visible >= EXPECTED_DLQ_DEPTH;
+    },
+    { timeoutMs, intervalMs: 2_000 },
+  );
+}
+
+export async function startStreamRecovery(): Promise<string> {
+  return invokeDemoRecovery({ path: RecoveryReplayTargetKind.DynamoDb });
 }
 
 export async function seedDemoShipments(): Promise<{ messageId: string; shipmentId: string }[]> {

@@ -1,7 +1,5 @@
-import {
-  CloudFormationClient,
-  DescribeStacksCommand,
-} from "@aws-sdk/client-cloudformation";
+import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { EventBridgeClient, PutEventsCommand } from "@aws-sdk/client-eventbridge";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
@@ -11,6 +9,12 @@ import {
   SQSClient,
   SendMessageCommand,
 } from "@aws-sdk/client-sqs";
+import {
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  PutCommand,
+  ScanCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { DEMO_SHIPMENTS } from "../fixtures/shipments";
 import {
   DEMO_STACK_NAME,
@@ -22,8 +26,11 @@ import {
   RECOVERY_ALIAS_OUTPUT,
   SHIPMENT_EVENT_DETAIL_TYPE,
   SHIPMENT_EVENT_SOURCE,
+  SHIPMENT_RECORDS_TABLE_OUTPUT,
   SNS_DLQ_URL_OUTPUT,
   SNS_TOPIC_ARN_OUTPUT,
+  STREAM_DLQ_URL_OUTPUT,
+  STREAM_PROCESSOR_ARN_OUTPUT,
 } from "../shared/demo";
 import { shipmentIdOf, type QueueDepth } from "../shared/demo-status";
 import {
@@ -47,6 +54,9 @@ const cloudFormation = new CloudFormationClient({});
 const lambda = new LambdaClient({});
 const eventBridge = new EventBridgeClient({});
 const sns = new SNSClient({});
+const shipmentRecords = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 
 export function formatDemoAwsError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -79,11 +89,10 @@ export async function resolveDemoQueueUrls(): Promise<DemoQueueUrls> {
 }
 
 export async function resolveDemoTableName(): Promise<string> {
-  const tableName = process.env.DEMO_LEDGER_TABLE_NAME ?? (await stackOutputs())[LEDGER_TABLE_OUTPUT];
+  const tableName =
+    process.env.DEMO_LEDGER_TABLE_NAME ?? (await stackOutputs())[LEDGER_TABLE_OUTPUT];
   if (!tableName) {
-    throw new Error(
-      `Missing ${LEDGER_TABLE_OUTPUT}. Deploy first, or set DEMO_LEDGER_TABLE_NAME.`,
-    );
+    throw new Error(`Missing ${LEDGER_TABLE_OUTPUT}. Deploy first, or set DEMO_LEDGER_TABLE_NAME.`);
   }
   return tableName;
 }
@@ -145,9 +154,53 @@ export async function resolveSnsTopicArn(): Promise<string> {
   }
   const topicArn = (await stackOutputs())[SNS_TOPIC_ARN_OUTPUT];
   if (!topicArn) {
-    throw new Error(`Missing ${SNS_TOPIC_ARN_OUTPUT}. Deploy first, or set RECOVERY_SNS_TOPIC_ARN.`);
+    throw new Error(
+      `Missing ${SNS_TOPIC_ARN_OUTPUT}. Deploy first, or set RECOVERY_SNS_TOPIC_ARN.`,
+    );
   }
   return topicArn;
+}
+
+export async function resolveShipmentRecordsTableName(): Promise<string> {
+  const fromEnv = process.env.SHIPMENT_RECORDS_TABLE_NAME;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const tableName = (await stackOutputs())[SHIPMENT_RECORDS_TABLE_OUTPUT];
+  if (!tableName) {
+    throw new Error(
+      `Missing ${SHIPMENT_RECORDS_TABLE_OUTPUT}. Deploy first, or set SHIPMENT_RECORDS_TABLE_NAME.`,
+    );
+  }
+  return tableName;
+}
+
+export async function resolveStreamProcessorArn(): Promise<string> {
+  const fromEnv = process.env.SHIPMENT_STREAM_PROCESSOR_ARN;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const functionArn = (await stackOutputs())[STREAM_PROCESSOR_ARN_OUTPUT];
+  if (!functionArn) {
+    throw new Error(
+      `Missing ${STREAM_PROCESSOR_ARN_OUTPUT}. Deploy first, or set SHIPMENT_STREAM_PROCESSOR_ARN.`,
+    );
+  }
+  return functionArn;
+}
+
+export async function resolveStreamDlqUrl(): Promise<string> {
+  const fromEnv = process.env.SHIPMENT_STREAM_DLQ_URL;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const dlqUrl = (await stackOutputs())[STREAM_DLQ_URL_OUTPUT];
+  if (!dlqUrl) {
+    throw new Error(
+      `Missing ${STREAM_DLQ_URL_OUTPUT}. Deploy first, or set SHIPMENT_STREAM_DLQ_URL.`,
+    );
+  }
+  return dlqUrl;
 }
 
 export async function resolveSnsDlqUrl(): Promise<string> {
@@ -166,9 +219,7 @@ export async function resolveSnsDlqUrl(): Promise<string> {
 
 async function stackOutputs(): Promise<Record<string, string>> {
   const stackName = process.env.DEMO_STACK_NAME ?? DEMO_STACK_NAME;
-  const result = await cloudFormation.send(
-    new DescribeStacksCommand({ StackName: stackName }),
-  );
+  const result = await cloudFormation.send(new DescribeStacksCommand({ StackName: stackName }));
   const outputs = result.Stacks?.[0]?.Outputs ?? [];
   return Object.fromEntries(
     outputs.flatMap((output) =>
@@ -177,14 +228,15 @@ async function stackOutputs(): Promise<Record<string, string>> {
   );
 }
 
+export async function streamDlqVisible(): Promise<number> {
+  return (await getQueueDepth(await resolveStreamDlqUrl())).visible;
+}
+
 export async function getQueueDepth(queueUrl: string): Promise<QueueDepth> {
   const result = await sqs.send(
     new GetQueueAttributesCommand({
       QueueUrl: queueUrl,
-      AttributeNames: [
-        "ApproximateNumberOfMessages",
-        "ApproximateNumberOfMessagesNotVisible",
-      ],
+      AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
     }),
   );
   const attributes = result.Attributes ?? {};
@@ -219,6 +271,11 @@ export async function invokeDemoRecovery(options: RecoveryInvokeOptions = {}): P
     event.dlqUrl = await resolveSnsDlqUrl();
     event.replayTarget = RecoveryReplayTargetKind.Sns;
     event.snsTopicArn = await resolveSnsTopicArn();
+  } else if (options.path === RecoveryReplayTargetKind.DynamoDb) {
+    // Drain the stream DLQ and invoke the stream processor with each saved item.
+    event.dlqUrl = await resolveStreamDlqUrl();
+    event.replayTarget = RecoveryReplayTargetKind.DynamoDb;
+    event.streamProcessorArn = await resolveStreamProcessorArn();
   }
 
   // Durable functions with executionTimeout > 15 minutes cannot use RequestResponse.
@@ -271,6 +328,51 @@ export async function seedEventBridgeShipments(): Promise<
   return seeded;
 }
 
+export async function seedShipmentRecords(): Promise<{ shipmentId: string }[]> {
+  const tableName = await resolveShipmentRecordsTableName();
+  const seeded: { shipmentId: string }[] = [];
+  for (const shipment of DEMO_SHIPMENTS) {
+    const shipmentId = shipmentIdOf(shipment);
+    await shipmentRecords.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          ...(shipment as Record<string, unknown>),
+          pk: shipmentId,
+        },
+      }),
+    );
+    seeded.push({ shipmentId });
+  }
+  return seeded;
+}
+
+export async function clearShipmentRecords(): Promise<void> {
+  const tableName = await resolveShipmentRecordsTableName();
+  let startKey: Record<string, unknown> | undefined;
+  do {
+    const page = await shipmentRecords.send(
+      new ScanCommand({
+        TableName: tableName,
+        ProjectionExpression: "pk",
+        ExclusiveStartKey: startKey,
+      }),
+    );
+    for (const item of page.Items ?? []) {
+      if (typeof item.pk !== "string") {
+        continue;
+      }
+      await shipmentRecords.send(
+        new DeleteCommand({
+          TableName: tableName,
+          Key: { pk: item.pk },
+        }),
+      );
+    }
+    startKey = page.LastEvaluatedKey;
+  } while (startKey);
+}
+
 export async function seedSnsShipments(): Promise<{ shipmentId: string; messageId: string }[]> {
   const topicArn = await resolveSnsTopicArn();
   const seeded: { shipmentId: string; messageId: string }[] = [];
@@ -299,10 +401,7 @@ export async function purgeQueue(queueUrl: string): Promise<void> {
   }
 }
 
-export async function sendJsonMessage(
-  queueUrl: string,
-  body: unknown,
-): Promise<string> {
+export async function sendJsonMessage(queueUrl: string, body: unknown): Promise<string> {
   const result = await sqs.send(
     new SendMessageCommand({
       QueueUrl: queueUrl,

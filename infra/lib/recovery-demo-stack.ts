@@ -1,10 +1,10 @@
 import * as path from "node:path";
 import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps } from "aws-cdk-lib";
-import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
+import { AttributeType, BillingMode, StreamViewType, Table } from "aws-cdk-lib/aws-dynamodb";
 import { EventBus, Rule } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
-import { Alias, Architecture, Runtime } from "aws-cdk-lib/aws-lambda";
-import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { Alias, Architecture, Runtime, StartingPosition } from "aws-cdk-lib/aws-lambda";
+import { DynamoEventSource, SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Topic } from "aws-cdk-lib/aws-sns";
 import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
@@ -22,8 +22,11 @@ import {
   RECOVERY_LIVE_ALIAS,
   SHIPMENT_EVENT_DETAIL_TYPE,
   SHIPMENT_EVENT_SOURCE,
+  SHIPMENT_RECORDS_TABLE_OUTPUT,
   SNS_DLQ_URL_OUTPUT,
   SNS_TOPIC_ARN_OUTPUT,
+  STREAM_DLQ_URL_OUTPUT,
+  STREAM_PROCESSOR_ARN_OUTPUT,
 } from "../../src/shared/demo";
 
 export class RecoveryDemoStack extends Stack {
@@ -39,6 +42,9 @@ export class RecoveryDemoStack extends Stack {
   public readonly shipmentTopic: Topic;
   public readonly shipmentNotificationsDlq: Queue;
   public readonly snsProcessor: NodejsFunction;
+  public readonly shipmentRecords: Table;
+  public readonly shipmentStreamDlq: Queue;
+  public readonly streamProcessor: NodejsFunction;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -216,6 +222,59 @@ export class RecoveryDemoStack extends Stack {
     this.shipmentNotificationsDlq.grantConsumeMessages(this.recoveryFunction);
     this.shipmentTopic.grantPublish(this.recoveryFunction);
 
+    // DynamoDB Streams failure path. The shipment table is separate from the
+    // ledger so ledger writes do not feed this stream. A stream has no redrive
+    // DLQ, so the processor writes a failed item onto ShipmentStreamDLQ.
+    // Recovery (replayTarget=dynamodb) invokes this processor with the saved
+    // item and does not write the table again. A thrown replay is retried
+    // twice and then dropped so one failure does not pin the shard.
+    this.shipmentRecords = new Table(this, "ShipmentRecords", {
+      partitionKey: { name: "pk", type: AttributeType.STRING },
+      billingMode: BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      stream: StreamViewType.NEW_IMAGE,
+    });
+
+    this.shipmentStreamDlq = new Queue(this, "ShipmentStreamDLQ", {
+      retentionPeriod: Duration.days(14),
+    });
+
+    this.streamProcessor = new NodejsFunction(this, "ShipmentStreamProcessor", {
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      entry: path.join(__dirname, "../../src/processor/stream-handler.ts"),
+      handler: "handler",
+      timeout: Duration.seconds(10),
+      memorySize: 256,
+      environment: {
+        DEMO_LEDGER_TABLE_NAME: this.demoLedger.tableName,
+        SHIPMENT_STREAM_DLQ_URL: this.shipmentStreamDlq.queueUrl,
+      },
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: "node24",
+      },
+    });
+
+    this.demoLedger.grantReadWriteData(this.streamProcessor);
+    this.shipmentStreamDlq.grantSendMessages(this.streamProcessor);
+    this.streamProcessor.addEventSource(
+      new DynamoEventSource(this.shipmentRecords, {
+        startingPosition: StartingPosition.LATEST,
+        batchSize: 1,
+        bisectBatchOnError: true,
+        retryAttempts: 2,
+      }),
+    );
+
+    this.recoveryFunction.addEnvironment(
+      "SHIPMENT_STREAM_PROCESSOR_ARN",
+      this.streamProcessor.functionArn,
+    );
+    this.shipmentStreamDlq.grantConsumeMessages(this.recoveryFunction);
+    this.streamProcessor.grantInvoke(this.recoveryFunction);
+
     new CfnOutput(this, QUEUE_URL_OUTPUT, {
       value: this.shipmentsQueue.queueUrl,
       description: "Source queue URL for demo:seed / demo:status / demo:reset",
@@ -254,6 +313,21 @@ export class RecoveryDemoStack extends Stack {
     new CfnOutput(this, SNS_DLQ_URL_OUTPUT, {
       value: this.shipmentNotificationsDlq.queueUrl,
       description: "SNS subscription DLQ URL for demo:status:sns and SNS-path recovery",
+    });
+
+    new CfnOutput(this, SHIPMENT_RECORDS_TABLE_OUTPUT, {
+      value: this.shipmentRecords.tableName,
+      description: "Shipment table streamed to the stream processor",
+    });
+
+    new CfnOutput(this, STREAM_PROCESSOR_ARN_OUTPUT, {
+      value: this.streamProcessor.functionArn,
+      description: "Stream processor invoked by DynamoDB-path recovery replays",
+    });
+
+    new CfnOutput(this, STREAM_DLQ_URL_OUTPUT, {
+      value: this.shipmentStreamDlq.queueUrl,
+      description: "DynamoDB stream DLQ URL for demo:status:ddb and stream-path recovery",
     });
   }
 }

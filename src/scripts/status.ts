@@ -1,4 +1,4 @@
-import { formatDemoStatus } from "../shared/demo-status";
+import { formatDemoStatus, STREAM_DLQ_LABEL } from "../shared/demo-status";
 import {
   formatDemoAwsError,
   getQueueDepth,
@@ -7,6 +7,7 @@ import {
   resolveDemoRecoveryStore,
   resolveEventDlqUrl,
   resolveSnsDlqUrl,
+  streamDlqVisible,
 } from "./aws";
 
 async function main(): Promise<void> {
@@ -14,11 +15,12 @@ async function main(): Promise<void> {
   const [eventDlqUrl, snsDlqUrl] = await Promise.all([resolveEventDlqUrl(), resolveSnsDlqUrl()]);
   const ledger = await resolveDemoLedger();
   const recovery = await resolveDemoRecoveryStore();
-  const [queue, dlq, eventDlq, snsDlq] = await Promise.all([
+  const [queue, dlq, eventDlq, snsDlq, streamVisible] = await Promise.all([
     getQueueDepth(urls.queueUrl),
     getQueueDepth(urls.dlqUrl),
     getQueueDepth(eventDlqUrl),
     getQueueDepth(snsDlqUrl),
+    streamDlqVisible(),
   ]);
   const [shipments, quarantines, recoveryJobs, recoveryMessages, downstreamStatus] =
     await Promise.all([
@@ -33,6 +35,7 @@ async function main(): Promise<void> {
       extraQueues: [
         { label: "ShipmentEventsDLQ", visible: eventDlq.visible },
         { label: "ShipmentNotificationsDLQ", visible: snsDlq.visible },
+        { label: STREAM_DLQ_LABEL, visible: streamVisible },
       ],
       quarantines,
       recoveryJobs,

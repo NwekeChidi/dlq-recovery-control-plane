@@ -22,6 +22,13 @@ export const EVENT_DLQ_URL_OUTPUT = "ShipmentEventsDlqUrl";
 export const SNS_TOPIC_ARN_OUTPUT = "ShipmentTopicArn";
 export const SNS_DLQ_URL_OUTPUT = "ShipmentNotificationsDlqUrl";
 
+// DynamoDB Streams failure path. Inserts and updates on a shipment table stream
+// to a Lambda. The processor writes a failed initial delivery onto an SQS
+// dead-letter queue. Recovery invokes that processor with the saved item.
+export const SHIPMENT_RECORDS_TABLE_OUTPUT = "ShipmentRecordsTableName";
+export const STREAM_DLQ_URL_OUTPUT = "ShipmentStreamDlqUrl";
+export const STREAM_PROCESSOR_ARN_OUTPUT = "ShipmentStreamProcessorArn";
+
 /** Source/detail-type used when seeding fresh shipment events onto the bus. */
 export const SHIPMENT_EVENT_SOURCE = "fulfilment.shipments";
 export const SHIPMENT_EVENT_DETAIL_TYPE = "ShipmentRequested";
