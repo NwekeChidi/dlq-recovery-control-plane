@@ -28,25 +28,25 @@ Redeploy after code changes so the live processor and `live` recovery alias pick
 ## Reset
 
 ```bash
-npm run demo:reset
+npm run reset
 ```
 
-Purges both queues, clears the demo ledger, and restores downstream to `healthy`.
+Purges `ShipmentsQueue`, `ShipmentsSqsDLQ`, `ShipmentEventsDLQ`, `ShipmentNotificationsDLQ`, and `ShipmentStreamDLQ`, clears the demo ledger and shipment table, and restores downstream to `healthy`.
 
 SQS allows purge only once per 60 seconds. If reset fails for that reason, wait a minute and retry. Do not use the Console between rehearsal runs.
 
 ## Seed
 
 ```bash
-npm run demo:seed
+npm run seed:sqs
 ```
 
-Sends SHP-001 through SHP-004 and waits until the DLQ has 4 messages.
+Sends SHP-001 through SHP-004 and waits until `ShipmentsSqsDLQ` has 4 messages.
 
 ## Inspect
 
 ```bash
-npm run demo:status
+npm run status
 ```
 
 Projector-friendly summary of `ShipmentsQueue`, `ShipmentsSqsDLQ`, `ShipmentEventsDLQ`, `ShipmentNotificationsDLQ`, `ShipmentStreamDLQ`, downstream, quarantine, and recovery. Use a large terminal font.
@@ -54,13 +54,13 @@ Projector-friendly summary of `ShipmentsQueue`, `ShipmentsSqsDLQ`, `ShipmentEven
 ## Recover
 
 ```bash
-npm run recovery:start
+npm run recovery:start:sqs
 ```
 
 Starts the durable recovery job asynchronously and prints `Started recovery: REC-...`. Wait about 15 seconds, then inspect:
 
 ```bash
-npm run demo:status
+npm run status
 ```
 
 Healthy outcome:
@@ -76,9 +76,9 @@ Status   COMPLETED
 ## Break downstream
 
 ```bash
-npm run demo:break-downstream
-npm run recovery:start
-npm run demo:status
+npm run break-downstream
+npm run recovery:start:sqs
+npm run status
 ```
 
 Authorized replays fail. Recovery should stop itself:
@@ -91,18 +91,18 @@ Stop reason:   Replay failure rate ... exceeded maxFailureRate 0.25
 ## Restore downstream
 
 ```bash
-npm run demo:restore-downstream
+npm run restore-downstream
 ```
 
-`demo:reset` also restores healthy.
+`npm run reset` also restores healthy.
 
 ## Smoke
 
 End-to-end check against the deployed stack (reset → seed → recover → assert):
 
 ```bash
-npm run demo:smoke
-npm run demo:smoke -- --circuit-breaker
+npm run smoke:sqs
+npm run smoke:sqs -- --circuit-breaker
 ```
 
 Prints `PASS` or `FAIL`. The circuit-breaker run restores downstream even when the assertion fails.
@@ -114,23 +114,23 @@ Three more fully deployed failure paths prove the control plane is source-agnost
 EventBridge — a bus delivers shipment events to a Lambda target. The processor writes a failed event to `ShipmentEventsDLQ`. Recovery replays via `PutEvents`:
 
 ```bash
-npm run demo:seed:eb       # PutEvents SHP-001..004; processor dead-letters them; wait until ShipmentEventsDLQ has 4
-npm run demo:status:eb     # bus name + ShipmentEventsDLQ depth + ledger + recovery projection
-npm run recovery:start:eb  # recover the EventBridge path (replayTarget=eventbridge, replays onto the bus)
-npm run demo:status:eb     # after (~15s); expect the DLQ drained and Status COMPLETED
-npm run demo:smoke:eb                       # end-to-end reset → seed → recover → assert
-npm run demo:smoke:eb -- --circuit-breaker  # STOP path
+npm run seed:eb             # PutEvents SHP-001..004; processor dead-letters them; wait until ShipmentEventsDLQ has 4
+npm run status:eb           # bus name + ShipmentEventsDLQ depth + ledger + recovery projection
+npm run recovery:start:eb   # recover the EventBridge path (replayTarget=eventbridge, replays onto the bus)
+npm run status:eb           # after (~15s); expect the DLQ drained and Status COMPLETED
+npm run smoke:eb                       # end-to-end reset → seed → recover → assert
+npm run smoke:eb -- --circuit-breaker  # STOP path
 ```
 
 SNS — a topic fans out to a Lambda subscription. The processor writes a failed initial delivery, as an SNS notification, to `ShipmentNotificationsDLQ`. Recovery republishes via `Publish` (provenance rides as message attributes):
 
 ```bash
-npm run demo:seed:sns       # Publish SHP-001..004; processor dead-letters them; wait until ShipmentNotificationsDLQ has 4
-npm run demo:status:sns     # topic ARN + ShipmentNotificationsDLQ depth + ledger + recovery projection
+npm run seed:sns            # Publish SHP-001..004; processor dead-letters them; wait until ShipmentNotificationsDLQ has 4
+npm run status:sns          # topic ARN + ShipmentNotificationsDLQ depth + ledger + recovery projection
 npm run recovery:start:sns  # recover the SNS path (replayTarget=sns, republishes onto the topic)
-npm run demo:status:sns     # after (~15s); expect the DLQ drained and Status COMPLETED
-npm run demo:smoke:sns                       # end-to-end reset → seed → recover → assert
-npm run demo:smoke:sns -- --circuit-breaker  # STOP path
+npm run status:sns          # after (~15s); expect the DLQ drained and Status COMPLETED
+npm run smoke:sns                       # end-to-end reset → seed → recover → assert
+npm run smoke:sns -- --circuit-breaker  # STOP path
 ```
 
 DynamoDB Streams — inserts on a shipment table stream to a Lambda. The processor writes a failed item to `ShipmentStreamDLQ`. Recovery invokes that processor with the saved item (provenance rides on the record as `__recovery`) and does not write the table again:
@@ -154,25 +154,25 @@ npm run destroy
 
 ## Slides
 
-28-minute AWS Community deck (no company branding): open [slides/index.html](slides/index.html). For Google Slides, upload [slides/taming-dead-letter-queues.pptx](slides/taming-dead-letter-queues.pptx) to Drive and Open with Google Slides. Keys and fallbacks: [slides/README.md](slides/README.md).
+28-minute AWS Community deck (no company branding): open [slides/index.html](slides/index.html). Rebuild the deck with `npm run slides:pptx`. For Google Slides, upload [slides/taming-dead-letter-queues.pptx](slides/taming-dead-letter-queues.pptx) to Drive and Open with Google Slides. Keys and fallbacks: [slides/README.md](slides/README.md).
 
 ## Talk sequence
 
 ```bash
-npm run demo:reset
-npm run demo:seed
-npm run demo:status
-npm run recovery:start
-npm run demo:status
+npm run reset
+npm run seed:sqs
+npm run status
+npm run recovery:start:sqs
+npm run status
 ```
 
 Failure-mode beat:
 
 ```bash
-npm run demo:reset
-npm run demo:seed
-npm run demo:break-downstream
-npm run recovery:start
-npm run demo:status
-npm run demo:restore-downstream
+npm run reset
+npm run seed:sqs
+npm run break-downstream
+npm run recovery:start:sqs
+npm run status
+npm run restore-downstream
 ```
